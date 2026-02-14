@@ -22,7 +22,24 @@ import { searchServices } from "../tools/search-services.js";
  * This is the main entry point for the conversational state machine.
  */
 export async function processMessage(phone: string, message: string): Promise<string> {
+  console.log('\n' + '🟢'.repeat(40));
+  console.log('🟢 PROCESS_MESSAGE - Inicio');
+  console.log('🟢 Phone:', phone);
+  console.log('🟢 Message:', message);
+  console.log('🟢'.repeat(40) + '\n');
+
   const ctx = getSession(phone);
+  
+  console.log('📊 Contexto actual:');
+  console.log('   - state:', ctx.state);
+  console.log('   - clientId:', ctx.clientId);
+  console.log('   - kommoContactId:', ctx.kommoContactId);
+  console.log('   - selectedServiceId:', ctx.selectedServiceId);
+  console.log('   - selectedServiceName:', ctx.selectedServiceName);
+  console.log('   - selectedDate:', ctx.selectedDate);
+  console.log('   - selectedSlot:', ctx.selectedSlot);
+  console.log();
+
   const normalizedMsg = message.trim().toLowerCase();
   let messageForFSM = message;
 
@@ -30,6 +47,7 @@ export async function processMessage(phone: string, message: string): Promise<st
   // If the user sent a natural-language request in their first message, we store it in ctx.lastIntent
   // and apply the shortcut once we land in MAIN_MENU.
   if (!message.trim() && ctx.state === "MAIN_MENU" && ctx.lastIntent && !ctx.lastIntentApplied) {
+    console.log('🔄 Aplicando intent carryover...');
     const intentRes = ctx.lastIntent;
     ctx.lastIntentApplied = true;
     try {
@@ -56,6 +74,7 @@ export async function processMessage(phone: string, message: string): Promise<st
     ctx.state !== "REGISTER_CLIENT" &&
     ctx.clientId
   ) {
+    console.log('🔙 Volviendo al menú principal');
     ctx.state = "MAIN_MENU";
     ctx.selectedServiceId = undefined;
     ctx.selectedServiceName = undefined;
@@ -77,7 +96,7 @@ export async function processMessage(phone: string, message: string): Promise<st
 
   let result: HandlerResult | undefined;
 
-    // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
   // AI intent parsing (thin layer)
   // - Only runs on states where the user can write freely
   // - Always falls back to the existing menu-driven state machine
@@ -90,30 +109,44 @@ export async function processMessage(phone: string, message: string): Promise<st
       ctx.state === "CONFIRM_BOOKING");
 
   if (shouldParseAI) {
+    console.log('🤖 Parseando intent con AI...');
     const intentRes = await parseIntent(message, ctx);
+    console.log('🤖 Intent detectado:', intentRes.intent);
+    console.log('🤖 Confidence:', intentRes.confidence);
+    console.log('🤖 Entities:', JSON.stringify(intentRes.entities, null, 2));
+    
     ctx.lastIntent = intentRes;
     ctx.lastIntentApplied = false;
 
     if (intentRes.confidence > 0.5) {
+      console.log('✅ Confidence > 0.5, intentando shortcut...');
       const prevState = ctx.state;
       const shortcut = await applyIntentShortcut(intentRes, ctx);
       if (shortcut) {
+        console.log('✅ Shortcut aplicado exitosamente');
+        console.log('   Estado anterior:', prevState);
+        console.log('   Estado nuevo:', ctx.state);
         updateSession(phone, ctx);
         return shortcut;
       }
       if (ctx.state !== prevState) {
+        console.log('🔄 Estado cambió sin shortcut, evitando FSM');
         // We jumped states due to intent; avoid feeding natural language into menu handlers.
         messageForFSM = "";
       }
+    } else {
+      console.log('⚠️ Confidence baja, usando FSM normal');
     }
   }
 
   // If AI didn't produce a shortcut, fall back to the state machine.
   if (!result) {
     try {
+      console.log('🎯 Ruteando al handler para state:', ctx.state);
       result = await routeToHandler(ctx, messageForFSM);
+      console.log('✅ Handler completado');
     } catch (error) {
-      console.error(`Error in state ${ctx.state}:`, error);
+      console.error(`❌ Error in state ${ctx.state}:`, error);
       return "Hubo un error procesando tu mensaje. Por favor intentá de nuevo.";
     }
   } else {
@@ -123,6 +156,7 @@ export async function processMessage(phone: string, message: string): Promise<st
 
   // Update state if handler returned a new one
   if (result.newState) {
+    console.log('🔄 Actualizando estado:', ctx.state, '→', result.newState);
     ctx.state = result.newState;
   }
 
@@ -130,34 +164,47 @@ export async function processMessage(phone: string, message: string): Promise<st
 
   // For auto-advancing states, chain the next handler immediately
   if (ctx.state === "IDENTIFY_CLIENT") {
+    console.log('🔄 Auto-advancing: IDENTIFY_CLIENT');
     const nextResult = await processMessage(phone, "");
     return result.response ? `${result.response}\n\n${nextResult}` : nextResult;
   }
 
   if (ctx.state === "BROWSE_SERVICES" && result.newState === "BROWSE_SERVICES") {
+    console.log('🔄 Auto-advancing: BROWSE_SERVICES');
     // Re-entered BROWSE_SERVICES -> auto-fetch
     return processMessage(phone, "");
   }
 
   if (ctx.state === "VIEW_MY_APPOINTMENTS" && result.newState === "VIEW_MY_APPOINTMENTS") {
+    console.log('🔄 Auto-advancing: VIEW_MY_APPOINTMENTS');
     return processMessage(phone, "");
   }
 
   if (ctx.state === "CANCEL_APPOINTMENT" && result.newState === "CANCEL_APPOINTMENT") {
+    console.log('🔄 Auto-advancing: CANCEL_APPOINTMENT');
     return processMessage(phone, "");
   }
 
   // DONE -> clear session
   if (ctx.state === "DONE") {
+    console.log('👋 Limpiando sesión - DONE');
     clearSession(phone);
   }
 
+  console.log('🟢 PROCESS_MESSAGE - Fin\n');
   return result.response;
 }
 
 async function applyIntentShortcut(intentRes: any, ctx: ConversationContext): Promise<string | null> {
+  console.log('\n' + '🚀'.repeat(40));
+  console.log('🚀 APPLY_INTENT_SHORTCUT');
+  console.log('🚀 Intent:', intentRes.intent);
+  console.log('🚀 Entities:', JSON.stringify(intentRes.entities, null, 2));
+  console.log('🚀'.repeat(40) + '\n');
+
   // Menu intent
   if (intentRes.intent === "MENU") {
+    console.log('📋 Intent: MENU');
     ctx.state = "MAIN_MENU";
     return (
       `¿En qué te puedo ayudar?\n\n` +
@@ -170,70 +217,104 @@ async function applyIntentShortcut(intentRes: any, ctx: ConversationContext): Pr
 
   // Greeting intent -> restart flow
   if (intentRes.intent === "GREETING") {
+    console.log('👋 Intent: GREETING');
     ctx.state = "GREETING";
     return null; // let FSM handle GREETING
   }
 
   // Goodbye intent -> exit
   if (intentRes.intent === "GOODBYE") {
+    console.log('👋 Intent: GOODBYE');
     ctx.state = "DONE";
     return "¡Gracias! Cuando quieras, escribime de nuevo 🙂";
   }
 
   // View appointments
   if (intentRes.intent === "VIEW_APPOINTMENTS") {
+    console.log('👁️ Intent: VIEW_APPOINTMENTS');
     ctx.state = "VIEW_MY_APPOINTMENTS";
     return ""; // FSM auto-fetches in handler.ts
   }
 
   // Cancel appointment
   if (intentRes.intent === "CANCEL_APPOINTMENT") {
+    console.log('❌ Intent: CANCEL_APPOINTMENT');
     ctx.state = "CANCEL_APPOINTMENT";
     return "";
   }
 
   // Book appointment
   if (intentRes.intent === "BOOK_APPOINTMENT") {
+    console.log('📅 Intent: BOOK_APPOINTMENT');
+    
     // 1) Resolve service (best effort)
     if (intentRes.entities?.serviceName) {
       try {
+        console.log('🔍 Buscando servicio:', intentRes.entities.serviceName);
         const { services } = await searchServices({ query: intentRes.entities.serviceName });
         const best = services[0];
         if (best) {
+          console.log('✅ Servicio encontrado:', best.name, '(ID:', best.id, 'Precio:', best.price, ')');
           ctx.selectedServiceId = best.id;
           ctx.selectedServiceName = best.name;
           ctx.selectedServiceDuration = best.duration_minutes;
+          ctx.selectedServicePrice = best.price; // ✅ AGREGADO
+        } else {
+          console.log('⚠️ No se encontró servicio');
         }
       } catch (e) {
-        console.error("Service lookup failed:", e);
+        console.error("❌ Service lookup failed:", e);
       }
     }
 
     // 2) Date/time prefill
-    if (intentRes.entities?.date) ctx.selectedDate = intentRes.entities.date;
-    if (intentRes.entities?.time) ctx.selectedSlot = intentRes.entities.time;
+    if (intentRes.entities?.date) {
+      console.log('📅 Fecha detectada:', intentRes.entities.date);
+      ctx.selectedDate = intentRes.entities.date;
+    }
+    if (intentRes.entities?.time) {
+      console.log('🕐 Hora detectada:', intentRes.entities.time);
+      ctx.selectedSlot = intentRes.entities.time;
+    }
 
-    // 3) Jump logic
-    if (ctx.selectedServiceId && ctx.selectedDate && ctx.selectedSlot) {
+    // 3) Jump logic - CRITICAL: Solo saltar a CONFIRM_BOOKING si el usuario está identificado
+    console.log('\n📊 Evaluando salto de estado:');
+    console.log('   - clientId:', ctx.clientId, ctx.clientId ? '✅' : '❌');
+    console.log('   - selectedServiceId:', ctx.selectedServiceId, ctx.selectedServiceId ? '✅' : '❌');
+    console.log('   - selectedServicePrice:', ctx.selectedServicePrice, ctx.selectedServicePrice ? '✅' : '❌');
+    console.log('   - selectedDate:', ctx.selectedDate, ctx.selectedDate ? '✅' : '❌');
+    console.log('   - selectedSlot:', ctx.selectedSlot, ctx.selectedSlot ? '✅' : '❌');
+
+    // CRITICAL FIX: Necesitamos clientId para confirmar booking
+    if (ctx.clientId && ctx.selectedServiceId && ctx.selectedDate && ctx.selectedSlot) {
+      console.log('✅ Todos los datos completos → CONFIRM_BOOKING');
       ctx.state = "CONFIRM_BOOKING";
+      
+      // ✅ FORMATO CON PRECIO
+      const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
+      
       return (
         `Confirmación de turno:\n\n` +
         `- Servicio: ${ctx.selectedServiceName}\n` +
         `- Fecha: ${ctx.selectedDate}\n` +
-        `- Hora: ${ctx.selectedSlot}\n\n` +
-        `Respondé *si* para confirmar o *no* para cancelar.`
+        `- Hora: ${ctx.selectedSlot}\n` +
+        priceText +
+        `\nRespondé *si* para confirmar o *no* para cancelar.`
       );
     }
 
     if (ctx.selectedServiceId) {
+      console.log('✅ Servicio seleccionado → CHECK_AVAILABILITY');
       ctx.state = "CHECK_AVAILABILITY";
       return "";
     }
 
+    console.log('⚠️ Faltan datos → BROWSE_SERVICES');
     ctx.state = "BROWSE_SERVICES";
     return "";
   }
 
+  console.log('⚠️ No se aplicó ningún shortcut');
   return null;
 }
 

@@ -63,6 +63,7 @@ export interface ConversationContext {
   selectedServiceId?: string;
   selectedServiceName?: string;
   selectedServiceDuration?: number;
+  selectedServicePrice?: number; // ✅ AGREGADO
   selectedDate?: string;        // YYYY-MM-DD
   availableSlots?: string[];    // ["09:00", "09:30", ...]
   selectedSlot?: string;        // "09:00"

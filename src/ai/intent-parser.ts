@@ -4,7 +4,7 @@ import { parseUserDate } from "../lib/date-utils.js";
 import { searchServices } from "../tools/search-services.js";
 import { buildIntentSystemPrompt } from "./prompts.js";
 
-const MODEL = "claude-haiku-4-5-20250929";
+const MODEL = "claude-haiku-4-5-20251001";
 
 function toUserIntent(x: unknown): UserIntent {
   const v = String(x ?? "UNKNOWN").toUpperCase();

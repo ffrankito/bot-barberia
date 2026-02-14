@@ -31,10 +31,11 @@ export async function handleSelectService(
   ctx.selectedServiceId = selected.id;
   ctx.selectedServiceName = selected.name;
   ctx.selectedServiceDuration = selected.duration_minutes;
+  ctx.selectedServicePrice = selected.price; // ✅ AGREGADO
 
   return {
     response:
-      `Elegiste *${selected.name}* (${selected.duration_minutes} min).\n\n` +
+      `Elegiste *${selected.name}* (${selected.duration_minutes} min - $${selected.price}).\n\n` + // ✅ AGREGADO PRECIO
       `¿Para qué fecha querés el turno?\n` +
       `Podés escribir: *hoy*, *mañana*, un día de la semana (ej: *lunes*), o una fecha (ej: *15/03*).`,
     newState: "CHECK_AVAILABILITY",

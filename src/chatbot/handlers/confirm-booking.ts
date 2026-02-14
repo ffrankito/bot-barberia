@@ -24,13 +24,17 @@ export async function handleConfirmBooking(
   if (answer !== "si" && answer !== "sí") {
     // AI shortcut entry: if we arrived here with all booking data, show summary.
     if (ctx.selectedServiceName && ctx.selectedDate && ctx.selectedSlot) {
+      // ✅ AGREGADO PRECIO EN RESUMEN
+      const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
+      
       return {
         response:
           `Confirmación de turno:\n\n` +
           `- Servicio: ${ctx.selectedServiceName}\n` +
           `- Fecha: ${ctx.selectedDate}\n` +
-          `- Hora: ${ctx.selectedSlot}\n\n` +
-          `Respondé *si* para confirmar o *no* para cancelar.`,
+          `- Hora: ${ctx.selectedSlot}\n` +
+          priceText +
+          `\nRespondé *si* para confirmar o *no* para cancelar.`,
       };
     }
 
@@ -88,29 +92,47 @@ export async function handleConfirmBooking(
   // Non-fatal: create Kommo lead
   if (ctx.kommoContactId && ctx.selectedServiceName) {
     try {
+      console.log('🔍 Intentando crear lead en Kommo...');
+      console.log('🔍 contactId:', ctx.kommoContactId);
+      console.log('🔍 serviceName:', ctx.selectedServiceName);
+      console.log('🔍 appointmentDate:', `${ctx.selectedDate} ${ctx.selectedSlot}`);
+      console.log('🔍 price:', ctx.selectedServicePrice); // ✅ AGREGADO LOG
+      
       await createLead({
         contactId: ctx.kommoContactId,
         serviceName: ctx.selectedServiceName,
         appointmentDate: `${ctx.selectedDate} ${ctx.selectedSlot}`,
+        price: ctx.selectedServicePrice, // ✅ AGREGADO PRECIO
       });
+      
+      console.log('✅ Lead creado en Kommo exitosamente');
     } catch (e) {
-      console.error("Kommo lead creation failed:", e);
+      console.error('❌ Kommo lead creation failed:', e);
     }
+  } else {
+    console.log('⚠️ No se puede crear lead en Kommo:');
+    console.log('   kommoContactId:', ctx.kommoContactId);
+    console.log('   selectedServiceName:', ctx.selectedServiceName);
   }
 
   // Clear booking context
   ctx.selectedServiceId = undefined;
   ctx.selectedServiceName = undefined;
   ctx.selectedServiceDuration = undefined;
+  ctx.selectedServicePrice = undefined; // ✅ AGREGADO
   ctx.selectedDate = undefined;
   ctx.availableSlots = undefined;
   ctx.selectedSlot = undefined;
+
+  // ✅ AGREGADO PRECIO EN MENSAJE FINAL
+  const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
 
   return {
     response:
       `¡Turno confirmado!\n\n` +
       `- Inicio: ${result.appointment!.starts_at}\n` +
       `- Fin: ${result.appointment!.ends_at}\n` +
+      priceText +
       `- Estado: pendiente\n\n` +
       `¿Necesitás algo más?\n\n` +
       `1. Ver servicios y sacar turno\n` +
