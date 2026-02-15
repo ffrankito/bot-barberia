@@ -6,7 +6,13 @@ export async function handleCheckAvailability(
   ctx: ConversationContext,
   message: string
 ): Promise<HandlerResult> {
-  const date = parseUserDate(message);
+  let date = ctx.selectedDate;
+  
+  // Si no, intentar parsear del mensaje del usuario
+  if (!date && message.trim()) {
+    const parsed = parseUserDate(message);
+    date = parsed || undefined;
+  }
 
   if (!date) {
     return {
