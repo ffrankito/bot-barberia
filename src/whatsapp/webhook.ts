@@ -161,9 +161,10 @@ app.use((err: any, req: any, res: any, next: any) => {
   res.status(500).json({ error: 'Internal server error', details: err.message });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '🚀'.repeat(40));
   console.log(`🚀 Chatbot server running on port ${PORT}`);
+  console.log(`🚀 Server listening on 0.0.0.0:${PORT}`);
   console.log('🚀 Waiting for WhatsApp messages...');
   console.log('🚀'.repeat(40) + '\n');
 });
