@@ -11,8 +11,19 @@ app.use(express.json());
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN ?? "";
 
+console.log('🔧 Configuración cargada:');
+console.log('   PORT:', PORT);
+console.log('   VERIFY_TOKEN:', VERIFY_TOKEN ? '✅ Configurado' : '❌ Falta');
+console.log('   SUPABASE_URL:', process.env.SUPABASE_URL ? '✅ Configurado' : '❌ Falta');
+console.log('   WHATSAPP_ACCESS_TOKEN:', process.env.WHATSAPP_ACCESS_TOKEN ? '✅ Configurado' : '❌ Falta');
+
 // Webhook verification (GET) - Meta sends this to verify your endpoint
 app.get("/webhook", (req, res) => {
+  console.log('📞 Webhook verification request');
+  console.log('   hub.mode:', req.query["hub.mode"]);
+  console.log('   hub.verify_token:', req.query["hub.verify_token"]);
+  console.log('   VERIFY_TOKEN esperado:', VERIFY_TOKEN);
+
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
@@ -22,6 +33,8 @@ app.get("/webhook", (req, res) => {
     res.status(200).send(challenge);
   } else {
     console.warn("⚠️ Webhook verification failed");
+    console.warn("   Mode match:", mode === "subscribe");
+    console.warn("   Token match:", token === VERIFY_TOKEN);
     res.sendStatus(403);
   }
 });
@@ -113,17 +126,39 @@ app.post("/webhook", async (req, res) => {
 
 // Health check
 app.get("/health", async (_req, res) => {
+  console.log('🏥 Health check request');
   let supabaseOk = true;
   try {
-    // lightweight connectivity check (will fail if URL/key invalid or DB unreachable)
     const { error } = await supabase.from("services").select("id").limit(1);
-    if (error) supabaseOk = false;
-  } catch {
+    if (error) {
+      console.error('❌ Supabase error:', error);
+      supabaseOk = false;
+    } else {
+      console.log('✅ Supabase OK');
+    }
+  } catch (e) {
+    console.error('❌ Supabase catch:', e);
     supabaseOk = false;
   }
   const checks = { server: true, supabase: supabaseOk };
   const status = supabaseOk ? "ok" : "degraded";
+  console.log('🏥 Health response:', { status, checks });
   res.json({ status, checks });
+});
+
+// Capturar errores no manejados
+process.on('uncaughtException', (error) => {
+  console.error('💥 UNCAUGHT EXCEPTION:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 UNHANDLED REJECTION:', reason);
+});
+
+// Error handler middleware
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error('💥 EXPRESS ERROR:', err);
+  res.status(500).json({ error: 'Internal server error', details: err.message });
 });
 
 app.listen(PORT, () => {
