@@ -258,7 +258,7 @@ async function applyIntentShortcut(intentRes: any, ctx: ConversationContext): Pr
           ctx.selectedServiceId = best.id;
           ctx.selectedServiceName = best.name;
           ctx.selectedServiceDuration = best.duration_minutes;
-          ctx.selectedServicePrice = best.price; // ✅ AGREGADO
+          ctx.selectedServicePrice = best.price;
         } else {
           console.log('⚠️ No se encontró servicio');
         }
@@ -277,31 +277,77 @@ async function applyIntentShortcut(intentRes: any, ctx: ConversationContext): Pr
       ctx.selectedSlot = intentRes.entities.time;
     }
 
-    // 3) Jump logic - CRITICAL: Solo saltar a CONFIRM_BOOKING si el usuario está identificado
+    // 3) Verificar disponibilidad si tiene servicio + fecha + hora
+    if (ctx.selectedServiceId && ctx.selectedDate && ctx.selectedSlot) {
+      console.log('🔍 Verificando disponibilidad del horario solicitado...');
+      
+      try {
+        const { checkAvailability } = await import("../tools/check-availability.js");
+        const availability = await checkAvailability({
+          service_id: ctx.selectedServiceId,
+          date: ctx.selectedDate,
+        });
+
+        const requestedSlot = ctx.selectedSlot;
+        const isSlotAvailable = availability.available_slots.includes(requestedSlot);
+
+        if (isSlotAvailable) {
+          console.log('✅ Horario disponible!');
+          // Guardar slots disponibles por si necesita cambiar
+          ctx.availableSlots = availability.available_slots;
+          
+          // Si ya tiene clientId, ir directo a confirmación
+          if (ctx.clientId) {
+            console.log('✅ Usuario identificado → CONFIRM_BOOKING');
+            ctx.state = "CONFIRM_BOOKING";
+            
+            const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
+            
+            return (
+              `Confirmación de turno:\n\n` +
+              `- Servicio: ${ctx.selectedServiceName}\n` +
+              `- Fecha: ${ctx.selectedDate}\n` +
+              `- Hora: ${ctx.selectedSlot}\n` +
+              priceText +
+              `\nRespondé *si* para confirmar o *no* para cancelar.`
+            );
+          } else {
+            // No tiene clientId, necesita identificarse primero
+            console.log('⚠️ Usuario no identificado → GREETING');
+            ctx.state = "GREETING";
+            return null; // Let FSM handle identification
+          }
+        } else {
+          console.log('❌ Horario NO disponible, mostrando alternativas');
+          // El horario solicitado no está disponible, mostrar alternativas
+          ctx.availableSlots = availability.available_slots;
+          ctx.selectedSlot = undefined; // Limpiar el slot no disponible
+          
+          const slotList = availability.available_slots
+            .map((s, i) => `${i + 1}. ${s}`)
+            .join("\n");
+
+          ctx.state = "SELECT_SLOT";
+          return (
+            `El horario ${requestedSlot} no está disponible 😔\n\n` +
+            `Horarios disponibles el *${availability.day_name} ${ctx.selectedDate}*:\n\n` +
+            `${slotList}\n\n` +
+            `Escribí el número del horario que preferís, o *volver* para ir al menú.`
+          );
+        }
+      } catch (e) {
+        console.error('❌ Error verificando disponibilidad:', e);
+        // Si falla, continuar con el flujo normal
+      }
+    }
+
+    // 4) Jump logic normal (cuando no tiene hora específica)
     console.log('\n📊 Evaluando salto de estado:');
     console.log('   - clientId:', ctx.clientId, ctx.clientId ? '✅' : '❌');
     console.log('   - selectedServiceId:', ctx.selectedServiceId, ctx.selectedServiceId ? '✅' : '❌');
     console.log('   - selectedServicePrice:', ctx.selectedServicePrice, ctx.selectedServicePrice ? '✅' : '❌');
     console.log('   - selectedDate:', ctx.selectedDate, ctx.selectedDate ? '✅' : '❌');
     console.log('   - selectedSlot:', ctx.selectedSlot, ctx.selectedSlot ? '✅' : '❌');
-
-    // CRITICAL FIX: Necesitamos clientId para confirmar booking
-    if (ctx.clientId && ctx.selectedServiceId && ctx.selectedDate && ctx.selectedSlot) {
-      console.log('✅ Todos los datos completos → CONFIRM_BOOKING');
-      ctx.state = "CONFIRM_BOOKING";
-      
-      // ✅ FORMATO CON PRECIO
-      const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
-      
-      return (
-        `Confirmación de turno:\n\n` +
-        `- Servicio: ${ctx.selectedServiceName}\n` +
-        `- Fecha: ${ctx.selectedDate}\n` +
-        `- Hora: ${ctx.selectedSlot}\n` +
-        priceText +
-        `\nRespondé *si* para confirmar o *no* para cancelar.`
-      );
-    }
 
     if (ctx.selectedServiceId) {
       console.log('✅ Servicio seleccionado → CHECK_AVAILABILITY');
