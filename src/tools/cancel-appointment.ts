@@ -1,5 +1,6 @@
 import { supabase } from "../lib/supabase.js";
 import { formatAR } from "../lib/date-utils.js";
+import { updateLeadStage } from "../kommo/leads.js";
 
 export interface CancelAppointmentInput {
   appointment_id: string;
@@ -17,13 +18,31 @@ export interface CancelAppointmentOutput {
 }
 
 export async function cancelAppointment(input: CancelAppointmentInput): Promise<CancelAppointmentOutput> {
+  // 1. Primero obtenemos el appointment con el kommo_lead_id
+  const { data: appointmentData, error: fetchError } = await supabase
+    .from("appointments")
+    .select("id, starts_at, status, kommo_lead_id")
+    .eq("id", input.appointment_id)
+    .eq("client_id", input.client_id)
+    .neq("status", "cancelled")
+    .maybeSingle();
+
+  if (fetchError) {
+    return { success: false, error: `Error cancelando turno: ${fetchError.message}` };
+  }
+
+  if (!appointmentData) {
+    return { success: false, error: "No se encontró el turno o ya está cancelado." };
+  }
+
+  // 2. Actualizar en Supabase
   const { data, error } = await supabase
     .from("appointments")
     .update({ status: "cancelled" })
     .eq("id", input.appointment_id)
     .eq("client_id", input.client_id)
     .neq("status", "cancelled")
-    .select("id, starts_at, status")
+    .select("id, starts_at, status, kommo_lead_id")
     .maybeSingle();
 
   if (error) {
@@ -32,6 +51,26 @@ export async function cancelAppointment(input: CancelAppointmentInput): Promise<
 
   if (!data) {
     return { success: false, error: "No se encontró el turno o ya está cancelado." };
+  }
+
+  // 3. Actualizar el Lead en Kommo si existe
+  if (data.kommo_lead_id) {
+    try {
+      const cancelledStageId = Number(process.env.KOMMO_CANCELLED_STAGE_ID);
+      
+      if (!Number.isFinite(cancelledStageId)) {
+        console.error('⚠️  KOMMO_CANCELLED_STAGE_ID no está configurado. El lead no se moverá en Kommo.');
+      } else {
+        console.log(`🔄 Moviendo lead ${data.kommo_lead_id} al estado CANCELADO (${cancelledStageId})...`);
+        await updateLeadStage(data.kommo_lead_id, cancelledStageId);
+        console.log(`✅ Lead ${data.kommo_lead_id} movido a CANCELADO en Kommo`);
+      }
+    } catch (kommoError) {
+      console.error('❌ Error actualizando lead en Kommo:', kommoError);
+      // No fallamos la cancelación si Kommo falla, solo logueamos el error
+    }
+  } else {
+    console.log('ℹ️  No hay kommo_lead_id para este turno, se omite actualización en Kommo');
   }
 
   return {
