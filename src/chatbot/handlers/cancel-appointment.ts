@@ -1,6 +1,7 @@
 import type { ConversationContext, HandlerResult } from "../types.js";
 import { getAppointments } from "../../tools/get-appointments.js";
 import { cancelAppointment } from "../../tools/cancel-appointment.js";
+import { supabase } from "../../lib/supabase.js";
 
 export async function handleCancelAppointment(
   ctx: ConversationContext,
@@ -72,6 +73,28 @@ export async function handleCancelAppointment(
         "4. Salir",
       newState: "MAIN_MENU",
     };
+  }
+
+  // Cancel lead in Kommo
+  try {
+    const { data: appointment } = await supabase
+      .from('appointments')
+      .select('kommo_lead_id')
+      .eq('id', selected.id)
+      .single();
+
+    if (appointment?.kommo_lead_id) {
+      console.log('🔍 Cancelando lead en Kommo, ID:', appointment.kommo_lead_id);
+      
+      const { updateLeadStage } = await import("../../kommo/leads.js");
+      await updateLeadStage(appointment.kommo_lead_id, 143); // 143 = "Venta Perdido"
+      
+      console.log('✅ Lead cancelado en Kommo');
+    } else {
+      console.log('⚠️ No hay lead_id para cancelar en Kommo');
+    }
+  } catch (e) {
+    console.error('⚠️ Error cancelando lead en Kommo:', e);
   }
 
   return {

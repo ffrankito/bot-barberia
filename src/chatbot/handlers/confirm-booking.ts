@@ -2,6 +2,7 @@ import type { ConversationContext, HandlerResult } from "../types.js";
 import { createAppointment } from "../../tools/create-appointment.js";
 import { checkAvailability } from "../../tools/check-availability.js";
 import { createLead } from "../../kommo/leads.js";
+import { supabase } from "../../lib/supabase.js";
 
 export async function handleConfirmBooking(
   ctx: ConversationContext,
@@ -24,7 +25,6 @@ export async function handleConfirmBooking(
   if (answer !== "si" && answer !== "sí") {
     // AI shortcut entry: if we arrived here with all booking data, show summary.
     if (ctx.selectedServiceName && ctx.selectedDate && ctx.selectedSlot) {
-      // ✅ AGREGADO PRECIO EN RESUMEN
       const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
       
       return {
@@ -54,9 +54,7 @@ export async function handleConfirmBooking(
   });
 
   if (!result.success) {
-    // Race condition: slot was taken
     if (result.error?.includes("no está disponible")) {
-      // Re-check availability
       const availability = await checkAvailability({
         service_id: ctx.selectedServiceId,
         date: ctx.selectedDate,
@@ -89,50 +87,50 @@ export async function handleConfirmBooking(
     };
   }
 
-  // Non-fatal: create Kommo lead
+  // Create Kommo lead and save lead_id
   if (ctx.kommoContactId && ctx.selectedServiceName) {
     try {
-      console.log('🔍 Intentando crear lead en Kommo...');
-      console.log('🔍 contactId:', ctx.kommoContactId);
-      console.log('🔍 serviceName:', ctx.selectedServiceName);
-      console.log('🔍 appointmentDate:', `${ctx.selectedDate} ${ctx.selectedSlot}`);
-      console.log('🔍 price:', ctx.selectedServicePrice); // ✅ AGREGADO LOG
+      console.log('🔍 Creando lead en Kommo...');
       
-      await createLead({
+      const leadId = await createLead({
         contactId: ctx.kommoContactId,
         serviceName: ctx.selectedServiceName,
         appointmentDate: `${ctx.selectedDate} ${ctx.selectedSlot}`,
-        price: ctx.selectedServicePrice, // ✅ AGREGADO PRECIO
+        price: ctx.selectedServicePrice,
       });
       
-      console.log('✅ Lead creado en Kommo exitosamente');
+      console.log('✅ Lead creado en Kommo, ID:', leadId);
+
+      // Save lead_id to appointment
+      if (result.appointment?.id && leadId) {
+        await supabase
+          .from('appointments')
+          .update({ kommo_lead_id: leadId })
+          .eq('id', result.appointment.id);
+        
+        console.log('✅ Lead ID guardado en appointment');
+      }
     } catch (e) {
-      console.error('❌ Kommo lead creation failed:', e);
+      console.error('❌ Error creando lead en Kommo:', e);
     }
-  } else {
-    console.log('⚠️ No se puede crear lead en Kommo:');
-    console.log('   kommoContactId:', ctx.kommoContactId);
-    console.log('   selectedServiceName:', ctx.selectedServiceName);
   }
 
   // Clear booking context
   ctx.selectedServiceId = undefined;
   ctx.selectedServiceName = undefined;
   ctx.selectedServiceDuration = undefined;
-  ctx.selectedServicePrice = undefined; // ✅ AGREGADO
+  ctx.selectedServicePrice = undefined;
   ctx.selectedDate = undefined;
   ctx.availableSlots = undefined;
   ctx.selectedSlot = undefined;
 
-  // ✅ AGREGADO PRECIO EN MENSAJE FINAL
-  const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
+  const priceText = result.appointment?.id ? '' : ''; // El precio ya está en starts_at/ends_at
 
   return {
     response:
       `¡Turno confirmado!\n\n` +
       `- Inicio: ${result.appointment!.starts_at}\n` +
       `- Fin: ${result.appointment!.ends_at}\n` +
-      priceText +
       `- Estado: pendiente\n\n` +
       `¿Necesitás algo más?\n\n` +
       `1. Ver servicios y sacar turno\n` +
