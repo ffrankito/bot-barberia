@@ -4,6 +4,7 @@ import { processMessage } from "../chatbot/handler.js";
 import { sendWhatsAppMessage } from "./sender.js";
 import { normalizePhone } from "../lib/phone-utils.js";
 import { supabase } from "../lib/supabase.js";
+import { checkRateLimit } from "../middleware/rate-limiter.js";
 
 const app = express();
 app.use(express.json());
@@ -100,6 +101,13 @@ app.post("/webhook", async (req, res) => {
           const text: string = msg.text?.body ?? "";
 
           console.log(`💬 Mensaje de [${from}]: ${text}`);
+
+          // 🛡️ RATE LIMITING
+          if (!checkRateLimit(from)) {
+            console.warn(`⚠️ Rate limit exceeded for ${from}`);
+            await sendWhatsAppMessage(from, "⚠️ Demasiados mensajes. Por favor esperá un minuto.");
+            continue; // Saltar al siguiente mensaje
+          }
 
           console.log('⏳ Procesando con chatbot handler...');
           const reply = await processMessage(from, text);
