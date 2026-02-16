@@ -28,7 +28,7 @@ export async function processMessage(phone: string, message: string): Promise<st
   console.log('🟢 Message:', message);
   console.log('🟢'.repeat(40) + '\n');
 
-  const ctx = getSession(phone);
+  const ctx = await getSession(phone);
   
   console.log('📊 Contexto actual:');
   console.log('   - state:', ctx.state);
@@ -54,7 +54,7 @@ export async function processMessage(phone: string, message: string): Promise<st
       const prevState = ctx.state;
       const shortcut = await applyIntentShortcut(intentRes, ctx);
       if (shortcut) {
-        updateSession(phone, ctx);
+        await updateSession(phone, ctx);
         return shortcut;
       }
       if (ctx.state !== prevState) {
@@ -84,7 +84,7 @@ export async function processMessage(phone: string, message: string): Promise<st
     ctx.selectedSlot = undefined;
     ctx.cancellableAppointments = undefined;
 
-    updateSession(phone, ctx);
+    await updateSession(phone, ctx);
     return (
       `¿En qué te puedo ayudar?\n\n` +
       `1. Ver servicios y sacar turno\n` +
@@ -126,7 +126,7 @@ export async function processMessage(phone: string, message: string): Promise<st
         console.log('✅ Shortcut aplicado exitosamente');
         console.log('   Estado anterior:', prevState);
         console.log('   Estado nuevo:', ctx.state);
-        updateSession(phone, ctx);
+        await updateSession(phone, ctx);
         return shortcut;
       }
       if (ctx.state !== prevState) {
@@ -160,7 +160,7 @@ export async function processMessage(phone: string, message: string): Promise<st
     ctx.state = result.newState;
   }
 
-  updateSession(phone, ctx);
+  await updateSession(phone, ctx);
 
   // For auto-advancing states, chain the next handler immediately
   if (ctx.state === "IDENTIFY_CLIENT") {
@@ -188,7 +188,7 @@ export async function processMessage(phone: string, message: string): Promise<st
   // DONE -> clear session
   if (ctx.state === "DONE") {
     console.log('👋 Limpiando sesión - DONE');
-    clearSession(phone);
+    await clearSession(phone);
   }
 
   console.log('🟢 PROCESS_MESSAGE - Fin\n');
