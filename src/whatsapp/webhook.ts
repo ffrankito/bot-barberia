@@ -5,6 +5,7 @@ import { sendWhatsAppMessage } from "./sender.js";
 import { normalizePhone } from "../lib/phone-utils.js";
 import { supabase } from "../lib/supabase.js";
 import { checkRateLimit } from "../middleware/rate-limiter.js";
+import { logger, logMessage, logError } from "../lib/logger.js";
 
 const app = express();
 app.use(express.json());
@@ -12,30 +13,32 @@ app.use(express.json());
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN ?? "";
 
-console.log('🔧 Configuración cargada:');
-console.log('   PORT:', PORT);
-console.log('   VERIFY_TOKEN:', VERIFY_TOKEN ? '✅ Configurado' : '❌ Falta');
-console.log('   SUPABASE_URL:', process.env.SUPABASE_URL ? '✅ Configurado' : '❌ Falta');
-console.log('   WHATSAPP_ACCESS_TOKEN:', process.env.WHATSAPP_ACCESS_TOKEN ? '✅ Configurado' : '❌ Falta');
+logger.info({
+  port: PORT,
+  verifyToken: VERIFY_TOKEN ? '✅ Configurado' : '❌ Falta',
+  supabaseUrl: process.env.SUPABASE_URL ? '✅ Configurado' : '❌ Falta',
+  whatsappToken: process.env.WHATSAPP_ACCESS_TOKEN ? '✅ Configurado' : '❌ Falta',
+}, '🔧 Configuración cargada');
 
 // Webhook verification (GET) - Meta sends this to verify your endpoint
 app.get("/webhook", (req, res) => {
-  console.log('📞 Webhook verification request');
-  console.log('   hub.mode:', req.query["hub.mode"]);
-  console.log('   hub.verify_token:', req.query["hub.verify_token"]);
-  console.log('   VERIFY_TOKEN esperado:', VERIFY_TOKEN);
-
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
+  logger.debug({
+    mode,
+    tokenMatch: token === VERIFY_TOKEN,
+  }, '📞 Webhook verification request');
+
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified");
+    logger.info('✅ Webhook verified');
     res.status(200).send(challenge);
   } else {
-    console.warn("⚠️ Webhook verification failed");
-    console.warn("   Mode match:", mode === "subscribe");
-    console.warn("   Token match:", token === VERIFY_TOKEN);
+    logger.warn({
+      modeMatch: mode === "subscribe",
+      tokenMatch: token === VERIFY_TOKEN,
+    }, '⚠️ Webhook verification failed');
     res.sendStatus(403);
   }
 });
@@ -48,131 +51,116 @@ app.post("/webhook", async (req, res) => {
   try {
     const body = req.body;
 
-    console.log('\n' + '='.repeat(80));
-    console.log('📩 WEBHOOK RECIBIDO:', JSON.stringify(body, null, 2));
-    console.log('='.repeat(80) + '\n');
+    logger.debug({ body }, '📩 Webhook recibido');
 
     const entries = body?.entry;
     if (!Array.isArray(entries)) {
-      console.log('⚠️ No entries array');
+      logger.debug('⚠️ No entries array');
       return;
     }
 
     for (const entry of entries) {
       const changes = entry?.changes;
       if (!Array.isArray(changes)) {
-        console.log('⚠️ No changes array');
+        logger.debug('⚠️ No changes array');
         continue;
       }
 
       for (const change of changes) {
         const value = change?.value;
         if (!value || value.messaging_product !== "whatsapp") {
-          console.log('⚠️ Not a WhatsApp message');
+          logger.debug('⚠️ Not a WhatsApp message');
           continue;
         }
 
         const messages = value.messages;
         if (!Array.isArray(messages)) {
-          console.log('⚠️ No messages array');
+          logger.debug('⚠️ No messages array');
           continue;
         }
 
         for (const msg of messages) {
           // Only handle text messages
           if (msg.type !== "text") {
-            console.log('⚠️ Not a text message, type:', msg.type);
+            logger.debug({ type: msg.type }, '⚠️ Not a text message');
             continue;
           }
 
-          console.log('\n' + '-'.repeat(80));
-          console.log('🔍 PROCESANDO MENSAJE');
-          console.log('🔍 NÚMERO ORIGINAL (msg.from):', msg.from);
-          console.log('🔍 TIPO:', typeof msg.from);
-          console.log('🔍 LONGITUD:', msg.from.length);
-
           const from = normalizePhone(msg.from);
-          
-          console.log('🔍 NÚMERO NORMALIZADO:', from);
-          console.log('🔍 TIPO:', typeof from);
-          console.log('🔍 LONGITUD:', from.length);
-          console.log('-'.repeat(80) + '\n');
-
           const text: string = msg.text?.body ?? "";
 
-          console.log(`💬 Mensaje de [${from}]: ${text}`);
+          logger.debug({
+            originalPhone: msg.from,
+            normalizedPhone: from,
+          }, '🔍 Procesando mensaje');
+
+          logMessage(from, text, 'incoming');
 
           // 🛡️ RATE LIMITING
           if (!checkRateLimit(from)) {
-            console.warn(`⚠️ Rate limit exceeded for ${from}`);
+            logger.warn({ phone: from }, '⚠️ Rate limit exceeded');
             await sendWhatsAppMessage(from, "⚠️ Demasiados mensajes. Por favor esperá un minuto.");
-            continue; // Saltar al siguiente mensaje
+            continue;
           }
 
-          console.log('⏳ Procesando con chatbot handler...');
+          logger.debug({ phone: from }, '⏳ Procesando con chatbot handler');
           const reply = await processMessage(from, text);
-          console.log('✅ Handler completado');
+          logger.debug({ phone: from }, '✅ Handler completado');
 
           if (reply) {
-            console.log(`📤 Enviando respuesta a: ${from}`);
-            console.log(`📝 Respuesta (primeros 100 chars): ${reply.substring(0, 100)}...`);
+            logMessage(from, reply, 'outgoing');
             await sendWhatsAppMessage(from, reply);
           } else {
-            console.log('⚠️ No hay respuesta para enviar');
+            logger.debug({ phone: from }, '⚠️ No hay respuesta para enviar');
           }
 
-          console.log('✅ Mensaje procesado completamente\n');
+          logger.info({ phone: from }, '✅ Mensaje procesado completamente');
         }
       }
     }
   } catch (error) {
-    console.error('\n' + '❌'.repeat(40));
-    console.error("❌ Error processing webhook:", error);
-    console.error('❌'.repeat(40) + '\n');
+    logError(error, 'webhook processing');
   }
 });
 
 // Health check
 app.get("/health", async (_req, res) => {
-  console.log('🏥 Health check request');
+  logger.debug('🏥 Health check request');
   let supabaseOk = true;
   try {
     const { error } = await supabase.from("services").select("id").limit(1);
     if (error) {
-      console.error('❌ Supabase error:', error);
+      logger.error({ error }, '❌ Supabase error');
       supabaseOk = false;
     } else {
-      console.log('✅ Supabase OK');
+      logger.debug('✅ Supabase OK');
     }
   } catch (e) {
-    console.error('❌ Supabase catch:', e);
+    logger.error({ error: e }, '❌ Supabase catch');
     supabaseOk = false;
   }
   const checks = { server: true, supabase: supabaseOk };
   const status = supabaseOk ? "ok" : "degraded";
-  console.log('🏥 Health response:', { status, checks });
+  logger.debug({ status, checks }, '🏥 Health response');
   res.json({ status, checks });
 });
 
 // Capturar errores no manejados
 process.on('uncaughtException', (error) => {
-  console.error('💥 UNCAUGHT EXCEPTION:', error);
+  logError(error, 'uncaughtException');
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('💥 UNHANDLED REJECTION:', reason);
+  logError(reason, 'unhandledRejection');
 });
 
 // Error handler middleware
 app.use((err: any, req: any, res: any, next: any) => {
-  console.error('💥 EXPRESS ERROR:', err);
+  logError(err, 'express');
   res.status(500).json({ error: 'Internal server error', details: err.message });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('\n' + '🚀'.repeat(40));
-  console.log(`🚀 Chatbot server running on port ${PORT}`);
-  console.log(`🚀 Server listening on 0.0.0.0:${PORT}`);
-  console.log('🚀 Waiting for WhatsApp messages...');
-  console.log('🚀'.repeat(40) + '\n');
+  logger.info({ port: PORT }, '🚀 Chatbot server running');
 });
