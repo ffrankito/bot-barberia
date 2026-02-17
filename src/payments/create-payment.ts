@@ -32,7 +32,7 @@ export async function createPayment(input: CreatePaymentInput): Promise<CreatePa
   }
 
   try {
-    // Crear preferencia en Mercado Pago
+    // Crear preferencia en Mercado Pago (versión simplificada)
     const preference = await preferenceClient.create({
       body: {
         items: [
@@ -44,17 +44,8 @@ export async function createPayment(input: CreatePaymentInput): Promise<CreatePa
             currency_id: 'ARS',
           }
         ],
-        back_urls: {
-          success: `${process.env.BASE_URL || 'https://tu-dominio.com'}/payment-success`,
-          failure: `${process.env.BASE_URL || 'https://tu-dominio.com'}/payment-failure`,
-          pending: `${process.env.BASE_URL || 'https://tu-dominio.com'}/payment-pending`,
-        },
-        auto_return: 'approved',
         external_reference: input.appointment_id,
-        notification_url: `${process.env.BASE_URL || 'https://tu-dominio.com'}/api/webhooks/mercadopago`,
-        expires: true,
-        expiration_date_from: new Date().toISOString(),
-        expiration_date_to: new Date(Date.now() + 15 * 60 * 1000).toISOString(), // 15 minutos
+        notification_url: `${process.env.BASE_URL}/api/webhooks/mercadopago`,
       }
     });
 
@@ -77,7 +68,6 @@ export async function createPayment(input: CreatePaymentInput): Promise<CreatePa
         payment_url: preference.init_point,
         amount: input.amount,
         status: 'pending',
-        expired_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       })
       .select('id')
       .single();
