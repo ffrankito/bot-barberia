@@ -1,6 +1,13 @@
+import { z } from "zod";
 import { supabase } from "../lib/supabase.js";
 import { getDayOfWeek, isDateToday, dayNameES, arDateTimeToUTC, formatTimeAR } from "../lib/date-utils.js";
 import { generateAvailableSlots, type TimeBlock, type ExistingAppointment } from "../lib/slot-generator.js";
+
+// Schema de validación
+const CheckAvailabilitySchema = z.object({
+  service_id: z.string().uuid("service_id debe ser un UUID válido"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date debe tener formato YYYY-MM-DD"),
+});
 
 export interface CheckAvailabilityInput {
   service_id: string;
@@ -16,6 +23,15 @@ export interface CheckAvailabilityOutput {
 }
 
 export async function checkAvailability(input: CheckAvailabilityInput): Promise<CheckAvailabilityOutput> {
+  // Validar input con Zod
+  const validation = CheckAvailabilitySchema.safeParse(input);
+  
+  if (!validation.success) {
+    const errors = validation.error.issues.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ');
+    console.error('❌ Validación fallida:', errors);
+    throw new Error(`Datos inválidos: ${errors}`);
+  }
+
   const dayOfWeek = getDayOfWeek(input.date);
   const dayName = dayNameES(dayOfWeek);
 

@@ -1,6 +1,13 @@
+import { z } from "zod";
 import { supabase } from "../lib/supabase.js";
 import { formatAR } from "../lib/date-utils.js";
 import { updateLeadStage } from "../kommo/leads.js";
+
+// Schema de validación
+const CancelAppointmentSchema = z.object({
+  appointment_id: z.string().uuid("appointment_id debe ser un UUID válido"),
+  client_id: z.string().uuid("client_id debe ser un UUID válido"),
+});
 
 export interface CancelAppointmentInput {
   appointment_id: string;
@@ -18,6 +25,18 @@ export interface CancelAppointmentOutput {
 }
 
 export async function cancelAppointment(input: CancelAppointmentInput): Promise<CancelAppointmentOutput> {
+  // Validar input con Zod
+  const validation = CancelAppointmentSchema.safeParse(input);
+  
+  if (!validation.success) {
+    const errors = validation.error.issues.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ');
+    console.error('❌ Validación fallida:', errors);
+    return { 
+      success: false, 
+      error: `Datos inválidos: ${errors}` 
+    };
+  }
+
   // 1. Primero obtenemos el appointment con el kommo_lead_id
   const { data: appointmentData, error: fetchError } = await supabase
     .from("appointments")

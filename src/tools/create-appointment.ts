@@ -1,5 +1,16 @@
+import { z } from "zod";
 import { supabase } from "../lib/supabase.js";
 import { arDateTimeToUTC, formatAR } from "../lib/date-utils.js";
+
+// Schema de validación
+const CreateAppointmentSchema = z.object({
+  client_id: z.string().uuid("client_id debe ser un UUID válido"),
+  kommo_contact_id: z.number().int().positive().optional(),
+  service_id: z.string().uuid("service_id debe ser un UUID válido"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date debe tener formato YYYY-MM-DD"),
+  time: z.string().regex(/^\d{2}:\d{2}$/, "time debe tener formato HH:mm"),
+  notes: z.string().optional(),
+});
 
 export interface CreateAppointmentInput {
   client_id: string;
@@ -22,6 +33,18 @@ export interface CreateAppointmentOutput {
 }
 
 export async function createAppointment(input: CreateAppointmentInput): Promise<CreateAppointmentOutput> {
+  // Validar input con Zod
+  const validation = CreateAppointmentSchema.safeParse(input);
+  
+  if (!validation.success) {
+    const errors = validation.error.issues.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ');
+    console.error('❌ Validación fallida:', errors);
+    return { 
+      success: false, 
+      error: `Datos inválidos: ${errors}` 
+    };
+  }
+
   // 1. Get service duration
   const { data: service, error: serviceErr } = await supabase
     .from("services")
