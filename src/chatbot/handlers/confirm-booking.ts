@@ -118,11 +118,18 @@ export async function handleConfirmBooking(
   }
 
   // 💳 Generar link de pago con Mercado Pago
+  // 💳 Generar link de pago con Mercado Pago
   let paymentMessage = '';
   
   if (ctx.selectedServicePrice && ctx.selectedServicePrice > 0 && result.appointment?.id) {
     try {
-      logger.debug({ appointmentId: result.appointment.id }, '💳 Generando link de pago...');
+      logger.info({ 
+        appointmentId: result.appointment.id,
+        amount: ctx.selectedServicePrice,
+        serviceName: ctx.selectedServiceName,
+        date: ctx.selectedDate,
+        time: ctx.selectedSlot
+      }, '💳 Iniciando generación de link de pago...');
       
       const paymentResult = await createPayment({
         appointment_id: result.appointment.id,
@@ -130,11 +137,18 @@ export async function handleConfirmBooking(
         description: `Turno: ${ctx.selectedServiceName} - ${ctx.selectedDate} ${ctx.selectedSlot}`,
       });
 
+      logger.info({ 
+        paymentResult,
+        success: paymentResult.success,
+        hasUrl: !!paymentResult.payment_url,
+        error: paymentResult.error
+      }, '💳 Resultado de createPayment');
+
       if (paymentResult.success && paymentResult.payment_url) {
         logger.info({ 
           appointmentId: result.appointment.id,
           paymentUrl: paymentResult.payment_url 
-        }, '✅ Link de pago generado');
+        }, '✅ Link de pago generado exitosamente');
 
         paymentMessage = 
           `\n💳 *Para confirmar tu turno, completá el pago:*\n` +
@@ -142,14 +156,33 @@ export async function handleConfirmBooking(
           `💰 Monto: $${ctx.selectedServicePrice}\n` +
           `⏰ El link expira en 15 minutos.\n\n`;
       } else {
-        logger.error({ error: paymentResult.error }, '❌ Error generando pago');
+        logger.error({ 
+          error: paymentResult.error,
+          appointmentId: result.appointment.id
+        }, '❌ Error generando pago - no success o no URL');
+        
         paymentMessage = 
           `\n⚠️ Hubo un problema generando el link de pago.\n` +
           `Por favor contactanos para completar la reserva.\n\n`;
       }
-    } catch (e) {
-      logger.error({ error: e }, '❌ Error en proceso de pago');
+    } catch (e: any) {
+      logger.error({ 
+        error: e.message,
+        stack: e.stack,
+        appointmentId: result.appointment.id
+      }, '❌ Excepción en proceso de pago');
+      
+      paymentMessage = 
+        `\n⚠️ Hubo un problema generando el link de pago.\n` +
+        `Por favor contactanos para completar la reserva.\n\n`;
     }
+  } else {
+    logger.warn({
+      hasPrice: !!ctx.selectedServicePrice,
+      price: ctx.selectedServicePrice,
+      hasAppointmentId: !!result.appointment?.id,
+      appointmentId: result.appointment?.id
+    }, '⚠️ No se generó pago - faltan datos');
   }
 
   // Clear booking context
