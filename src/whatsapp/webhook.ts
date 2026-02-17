@@ -6,6 +6,7 @@ import { normalizePhone } from "../lib/phone-utils.js";
 import { supabase } from "../lib/supabase.js";
 import { checkRateLimit } from "../middleware/rate-limiter.js";
 import { logger, logMessage, logError } from "../lib/logger.js";
+import { handleMercadoPagoWebhook } from "../payments/webhook-handler.js";
 
 const app = express();
 app.use(express.json());
@@ -145,6 +146,7 @@ app.get("/health", async (_req, res) => {
   res.json({ status, checks });
 });
 
+app.post("/api/webhooks/mercadopago", handleMercadoPagoWebhook);
 // Capturar errores no manejados
 process.on('uncaughtException', (error) => {
   logError(error, 'uncaughtException');

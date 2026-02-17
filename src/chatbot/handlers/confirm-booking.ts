@@ -2,7 +2,9 @@ import type { ConversationContext, HandlerResult } from "../types.js";
 import { createAppointment } from "../../tools/create-appointment.js";
 import { checkAvailability } from "../../tools/check-availability.js";
 import { createLead } from "../../kommo/leads.js";
+import { createPayment } from "../../payments/create-payment.js";
 import { supabase } from "../../lib/supabase.js";
+import { logger } from "../../lib/logger.js";
 
 export async function handleConfirmBooking(
   ctx: ConversationContext,
@@ -90,7 +92,7 @@ export async function handleConfirmBooking(
   // Create Kommo lead and save lead_id
   if (ctx.kommoContactId && ctx.selectedServiceName) {
     try {
-      console.log('🔍 Creando lead en Kommo...');
+      logger.debug('🔍 Creando lead en Kommo...');
       
       const leadId = await createLead({
         contactId: ctx.kommoContactId,
@@ -99,7 +101,7 @@ export async function handleConfirmBooking(
         price: ctx.selectedServicePrice,
       });
       
-      console.log('✅ Lead creado en Kommo, ID:', leadId);
+      logger.info({ leadId }, '✅ Lead creado en Kommo');
 
       // Save lead_id to appointment
       if (result.appointment?.id && leadId) {
@@ -108,10 +110,45 @@ export async function handleConfirmBooking(
           .update({ kommo_lead_id: leadId })
           .eq('id', result.appointment.id);
         
-        console.log('✅ Lead ID guardado en appointment');
+        logger.debug('✅ Lead ID guardado en appointment');
       }
     } catch (e) {
-      console.error('❌ Error creando lead en Kommo:', e);
+      logger.error({ error: e }, '❌ Error creando lead en Kommo');
+    }
+  }
+
+  // 💳 Generar link de pago con Mercado Pago
+  let paymentMessage = '';
+  
+  if (ctx.selectedServicePrice && ctx.selectedServicePrice > 0 && result.appointment?.id) {
+    try {
+      logger.debug({ appointmentId: result.appointment.id }, '💳 Generando link de pago...');
+      
+      const paymentResult = await createPayment({
+        appointment_id: result.appointment.id,
+        amount: ctx.selectedServicePrice,
+        description: `Turno: ${ctx.selectedServiceName} - ${ctx.selectedDate} ${ctx.selectedSlot}`,
+      });
+
+      if (paymentResult.success && paymentResult.payment_url) {
+        logger.info({ 
+          appointmentId: result.appointment.id,
+          paymentUrl: paymentResult.payment_url 
+        }, '✅ Link de pago generado');
+
+        paymentMessage = 
+          `\n💳 *Para confirmar tu turno, completá el pago:*\n` +
+          `${paymentResult.payment_url}\n\n` +
+          `💰 Monto: $${ctx.selectedServicePrice}\n` +
+          `⏰ El link expira en 15 minutos.\n\n`;
+      } else {
+        logger.error({ error: paymentResult.error }, '❌ Error generando pago');
+        paymentMessage = 
+          `\n⚠️ Hubo un problema generando el link de pago.\n` +
+          `Por favor contactanos para completar la reserva.\n\n`;
+      }
+    } catch (e) {
+      logger.error({ error: e }, '❌ Error en proceso de pago');
     }
   }
 
@@ -124,14 +161,13 @@ export async function handleConfirmBooking(
   ctx.availableSlots = undefined;
   ctx.selectedSlot = undefined;
 
-  const priceText = result.appointment?.id ? '' : ''; // El precio ya está en starts_at/ends_at
-
   return {
     response:
-      `¡Turno confirmado!\n\n` +
-      `- Inicio: ${result.appointment!.starts_at}\n` +
-      `- Fin: ${result.appointment!.ends_at}\n` +
-      `- Estado: pendiente\n\n` +
+      `✅ *¡Turno reservado!*\n\n` +
+      `📅 Inicio: ${result.appointment!.starts_at}\n` +
+      `🕐 Fin: ${result.appointment!.ends_at}\n` +
+      `📋 Estado: Pendiente de pago\n` +
+      paymentMessage +
       `¿Necesitás algo más?\n\n` +
       `1. Ver servicios y sacar turno\n` +
       `2. Ver mis turnos\n` +
