@@ -2,7 +2,6 @@ import type { ConversationContext, HandlerResult } from "../types.js";
 import { createAppointment } from "../../tools/create-appointment.js";
 import { checkAvailability } from "../../tools/check-availability.js";
 import { createLead } from "../../kommo/leads.js";
-import { createPayment } from "../../payments/create-payment.js";
 import { supabase } from "../../lib/supabase.js";
 import { logger } from "../../lib/logger.js";
 
@@ -117,95 +116,21 @@ export async function handleConfirmBooking(
     }
   }
 
-  // 💳 Generar link de pago con Mercado Pago
-  // 💳 Generar link de pago con Mercado Pago
-  let paymentMessage = '';
-  
-  if (ctx.selectedServicePrice && ctx.selectedServicePrice > 0 && result.appointment?.id) {
-    try {
-      logger.info({ 
-        appointmentId: result.appointment.id,
-        amount: ctx.selectedServicePrice,
-        serviceName: ctx.selectedServiceName,
-        date: ctx.selectedDate,
-        time: ctx.selectedSlot
-      }, '💳 Iniciando generación de link de pago...');
-      
-      const paymentResult = await createPayment({
-        appointment_id: result.appointment.id,
-        amount: ctx.selectedServicePrice,
-        description: `Turno: ${ctx.selectedServiceName} - ${ctx.selectedDate} ${ctx.selectedSlot}`,
-      });
+  // Guardar el appointment ID en el contexto para el siguiente paso
+  ctx.lastAppointmentId = result.appointment?.id;
 
-      logger.info({ 
-        paymentResult,
-        success: paymentResult.success,
-        hasUrl: !!paymentResult.payment_url,
-        error: paymentResult.error
-      }, '💳 Resultado de createPayment');
-
-      if (paymentResult.success && paymentResult.payment_url) {
-        logger.info({ 
-          appointmentId: result.appointment.id,
-          paymentUrl: paymentResult.payment_url 
-        }, '✅ Link de pago generado exitosamente');
-
-        paymentMessage = 
-          `\n💳 *Para confirmar tu turno, completá el pago:*\n` +
-          `${paymentResult.payment_url}\n\n` +
-          `💰 Monto: $${ctx.selectedServicePrice}\n` +
-          `⏰ El link expira en 15 minutos.\n\n`;
-      } else {
-        logger.error({ 
-          error: paymentResult.error,
-          appointmentId: result.appointment.id
-        }, '❌ Error generando pago - no success o no URL');
-        
-        paymentMessage = 
-          `\n⚠️ Hubo un problema generando el link de pago.\n` +
-          `Por favor contactanos para completar la reserva.\n\n`;
-      }
-    } catch (e: any) {
-      logger.error({ 
-        error: e.message,
-        stack: e.stack,
-        appointmentId: result.appointment.id
-      }, '❌ Excepción en proceso de pago');
-      
-      paymentMessage = 
-        `\n⚠️ Hubo un problema generando el link de pago.\n` +
-        `Por favor contactanos para completar la reserva.\n\n`;
-    }
-  } else {
-    logger.warn({
-      hasPrice: !!ctx.selectedServicePrice,
-      price: ctx.selectedServicePrice,
-      hasAppointmentId: !!result.appointment?.id,
-      appointmentId: result.appointment?.id
-    }, '⚠️ No se generó pago - faltan datos');
-  }
-
-  // Clear booking context
-  ctx.selectedServiceId = undefined;
-  ctx.selectedServiceName = undefined;
-  ctx.selectedServiceDuration = undefined;
-  ctx.selectedServicePrice = undefined;
-  ctx.selectedDate = undefined;
-  ctx.availableSlots = undefined;
-  ctx.selectedSlot = undefined;
+  // En lugar de generar el pago automáticamente, preguntar método de pago
+  const priceText = ctx.selectedServicePrice ? `💰 Precio: $${ctx.selectedServicePrice}\n\n` : '';
 
   return {
     response:
       `✅ *¡Turno reservado!*\n\n` +
-      `📅 Inicio: ${result.appointment!.starts_at}\n` +
-      `🕐 Fin: ${result.appointment!.ends_at}\n` +
-      `📋 Estado: Pendiente de pago\n` +
-      paymentMessage +
-      `¿Necesitás algo más?\n\n` +
-      `1. Ver servicios y sacar turno\n` +
-      `2. Ver mis turnos\n` +
-      `3. Cancelar un turno\n` +
-      `4. Salir`,
-    newState: "MAIN_MENU",
+      `📅 ${ctx.selectedServiceName}\n` +
+      `🕐 ${ctx.selectedDate} - ${ctx.selectedSlot}\n` +
+      priceText +
+      `¿Cómo preferís pagar?\n\n` +
+      `1. 💳 Pagar ahora (Mercado Pago)\n` +
+      `2. 💵 Pagar en el local`,
+    newState: "SELECT_PAYMENT_METHOD",
   };
 }

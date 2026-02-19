@@ -10,6 +10,7 @@ import { handleSelectService } from "./handlers/select-service.js";
 import { handleCheckAvailability } from "./handlers/check-availability.js";
 import { handleSelectSlot } from "./handlers/select-slot.js";
 import { handleConfirmBooking } from "./handlers/confirm-booking.js";
+import { handleSelectPaymentMethod } from "./handlers/select-payment-method.js";
 import { handleViewAppointments } from "./handlers/view-appointments.js";
 import { handleCancelAppointment } from "./handlers/cancel-appointment.js";
 import { handleDone } from "./handlers/done.js";
@@ -385,6 +386,8 @@ async function routeToHandler(ctx: ConversationContext, message: string): Promis
       return handleSelectSlot(ctx, message);
     case "CONFIRM_BOOKING":
       return handleConfirmBooking(ctx, message);
+    case "SELECT_PAYMENT_METHOD":
+      return handleSelectPaymentMethod(ctx, message);
     case "VIEW_MY_APPOINTMENTS":
       return handleViewAppointments(ctx, message);
     case "CANCEL_APPOINTMENT":

@@ -8,6 +8,7 @@ export type ConversationState =
   | "CHECK_AVAILABILITY"
   | "SELECT_SLOT"
   | "CONFIRM_BOOKING"
+  | "SELECT_PAYMENT_METHOD"
   | "VIEW_MY_APPOINTMENTS"
   | "CANCEL_APPOINTMENT"
   | "DONE";
@@ -63,10 +64,11 @@ export interface ConversationContext {
   selectedServiceId?: string;
   selectedServiceName?: string;
   selectedServiceDuration?: number;
-  selectedServicePrice?: number; // ✅ AGREGADO
+  selectedServicePrice?: number;
   selectedDate?: string;        // YYYY-MM-DD
   availableSlots?: string[];    // ["09:00", "09:30", ...]
   selectedSlot?: string;        // "09:00"
+  lastAppointmentId?: string;   // ID del appointment recién creado
 
   // Cancel flow
   cancellableAppointments?: Array<{
