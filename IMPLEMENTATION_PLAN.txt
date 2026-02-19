@@ -1,0 +1,386 @@
+================================================================================
+  IMPLEMENTATION PLAN: WhatsApp Chatbot with Claude AI + Kommo CRM Integration
+================================================================================
+
+  CONTEXT
+  -------
+  The project is a WhatsApp appointment booking chatbot for a barber shop/salon,
+  built with TypeScript + Express + Supabase. It currently uses a rule-based
+  finite state machine (13 states) where users navigate via numbered menus.
+
+  Goals:
+    1. Add Claude AI (Anthropic) for intent-based routing -- users can type
+      naturally (e.g., "quiero un corte el viernes a las 3") and the AI detects
+      intent + extracts entities, then feeds them into the existing state machine.
+    2. Integrate Kommo CRM as the primary source of truth for contacts/leads,
+      replacing the Supabase "clients" table. Supabase remains for scheduling
+      data (services, availability, appointments).
+    3. Keep WhatsApp via Meta Cloud API (current setup, no changes).
+
+
+================================================================================
+  ARCHITECTURE
+================================================================================
+
+  WhatsApp Message
+    -> Express Webhook (unchanged)
+    -> normalizePhone() (unchanged)
+    -> processMessage(phone, text)
+        -> getSession(phone)
+        -> [NEW] parseIntent(text, ctx)         -- Claude Haiku API
+        ->        returns { intent, entities }
+        ->        pre-populates ctx fields
+        ->        skips states when possible
+        -> routeToHandler(ctx, message)          -- existing state machine
+        -> [MODIFIED] handlers use Kommo for contacts
+        -> updateSession(phone, ctx)
+    -> sendWhatsAppMessage() (unchanged)
+
+Key principle: The AI is a thin parsing layer. The state machine remains the
+core engine. If AI fails, fallback to menu-driven flow.
+
+
+================================================================================
+  PHASE 1: FOUNDATION (types + dependencies)
+================================================================================
+
+1.1 Install dependency
+    npm install @anthropic-ai/sdk
+
+1.2 Update .env.example
+    Add new variables:
+
+    # Anthropic Claude AI
+    ANTHROPIC_API_KEY=
+
+    # Kommo CRM
+    KOMMO_SUBDOMAIN=
+    KOMMO_ACCESS_TOKEN=
+    KOMMO_PIPELINE_ID=
+    KOMMO_INITIAL_STAGE_ID=
+
+    SECURITY NOTE: The current .env.example contains real credentials. These
+    should be replaced with placeholder values and the actual secrets rotated.
+
+1.3 Extend types in src/chatbot/types.ts
+    Add to existing file:
+
+    // AI Intent types
+    export type UserIntent =
+      | "BOOK_APPOINTMENT"
+      | "VIEW_APPOINTMENTS"
+      | "CANCEL_APPOINTMENT"
+      | "GREETING"
+      | "MENU"
+      | "GOODBYE"
+      | "UNKNOWN";
+
+    export interface ParsedEntities {
+      serviceName?: string;
+      date?: string;         // YYYY-MM-DD (resolved by parseUserDate)
+      time?: string;         // HH:mm
+      clientName?: string;
+    }
+
+    export interface IntentParseResult {
+      intent: UserIntent;
+      entities: ParsedEntities;
+      confidence: number;
+      rawDateText?: string;
+    }
+
+    // Kommo types
+    export interface KommoContact {
+      id: number;
+      name: string;
+      phone: string;
+    }
+
+    Add to ConversationContext:
+      kommoContactId?: number;
+      lastIntent?: IntentParseResult;
+
+VERIFICATION:
+  - npx tsc --noEmit compiles without errors
+  - No runtime changes
+
+
+================================================================================
+  PHASE 2: CLAUDE AI INTENT PARSER
+================================================================================
+
+2.1 Create src/ai/prompts.ts
+    - Build a system prompt that includes the dynamic service list from Supabase
+    - Reuse searchServices() from src/tools/search-services.ts (existing)
+    - AI must return structured JSON:
+      { intent, entities: { service_name, date_text, time_text, client_name }, confidence }
+    - Date text is extracted raw -- resolved later by parseUserDate() from
+      src/lib/date-utils.ts (existing)
+    - Time normalized to 24h HH:mm by the AI
+    - Prompt is in Spanish, matching the chatbot language
+
+2.2 Create src/ai/intent-parser.ts
+    - Uses @anthropic-ai/sdk with model claude-haiku-4-5-20250929 (fast + cheap)
+    - Quick bypasses (skip API call to save cost):
+      * Single-digit messages (/^\d{1,2}$/) -> return UNKNOWN (let menu handle)
+      * Known keywords ("volver", "menu", "si", "no") -> return directly
+    - Cache the system prompt for 5 minutes (service list rarely changes)
+    - On API error, return { intent: "UNKNOWN", confidence: 0 }
+      -> graceful fallback to menu flow
+    - Estimated cost: <$5/month for a small barber shop
+
+VERIFICATION:
+  - parseIntent("quiero un corte el viernes a las 3", ctx) returns:
+    { intent: "BOOK_APPOINTMENT",
+      entities: { serviceName: "Corte de pelo", date: "2026-02-13", time: "15:00" } }
+  - parseIntent("1", ctx) returns UNKNOWN without making an API call
+  - With invalid API key, returns UNKNOWN gracefully (no crash)
+
+
+================================================================================
+  PHASE 3: KOMMO CRM INTEGRATION
+================================================================================
+
+3.1 Create src/kommo/client.ts
+    - Thin REST client using native fetch (no extra dependencies)
+    - Base URL: https://{KOMMO_SUBDOMAIN}.kommo.com/api/v4
+    - Auth: Bearer {KOMMO_ACCESS_TOKEN} (long-lived token)
+    - Generic kommoRequest<T>(options) function
+    - Rate limit: 7 req/sec (more than enough for single barber shop)
+
+3.2 Create src/kommo/contacts.ts
+    Functions:
+    - findContactByPhone(phone)
+        GET /contacts?query={phone}
+        Returns KommoContact | null
+    - createContact(phone, name)
+        POST /contacts with field_code: "PHONE", enum_code: "MOB"
+    - updateContact(contactId, name)
+        PATCH /contacts/{id}
+
+3.3 Create src/kommo/leads.ts
+    Functions:
+    - createLead({ contactId, serviceName, appointmentDate, price })
+        POST /leads with pipeline/stage from env vars
+    - updateLeadStage(leadId, stageId)
+        PATCH /leads/{id} (for cancellations)
+
+3.4 Create bridge tools (replace Supabase client lookups)
+
+    src/tools/get-client-kommo.ts
+    - Calls findContactByPhone() from Kommo
+    - Also upserts a minimal record in Supabase "clients" table (for FK
+      integrity on appointments)
+    - Returns same GetClientOutput shape as existing get-client.ts
+
+    src/tools/register-client-kommo.ts
+    - Calls createContact() in Kommo
+    - Also upserts in Supabase "clients" table (for FK)
+    - Returns same RegisterClientOutput shape as existing register-client.ts
+
+    WHY DUAL-WRITE?
+    The appointments table has client_id FK referencing clients(id).
+    New contacts live in Kommo, but we need a Supabase clients row for the FK.
+    This is a transition strategy -- Kommo is source of truth for contact data,
+    Supabase clients is a thin shadow table for FK integrity only.
+
+3.5 Database migration: supabase/migrations/003_kommo_integration.sql
+
+    ALTER TABLE appointments ADD COLUMN kommo_contact_id INTEGER;
+    CREATE INDEX idx_appointments_kommo_contact ON appointments (kommo_contact_id);
+
+VERIFICATION:
+  - findContactByPhone("+549...") returns a contact from Kommo dashboard
+  - createContact("+549...", "Test") creates a contact visible in Kommo
+  - Supabase "clients" table still gets a row (dual-write for FK)
+
+
+================================================================================
+  PHASE 4: WIRE AI + KOMMO INTO STATE MACHINE
+================================================================================
+
+4.1 Modify src/chatbot/handler.ts (main entry point)
+
+    In processMessage(), after getSession() and before routeToHandler():
+
+    1. Check if current state warrants AI parsing
+       (GREETING, MAIN_MENU, or states expecting free text)
+    2. Call parseIntent(message, ctx)
+    3. If confidence > 0.5, attempt intent-based shortcuts:
+       - BOOK_APPOINTMENT: resolve service by name (reuse searchServices()),
+         resolve date (reuse parseUserDate()), pre-populate ctx fields,
+         skip to the furthest possible state
+       - VIEW_APPOINTMENTS: jump to VIEW_MY_APPOINTMENTS
+       - CANCEL_APPOINTMENT: jump to CANCEL_APPOINTMENT
+       - GREETING: reset to GREETING
+       - GOODBYE: jump to DONE
+    4. If shortcut fails or confidence low, fall through to routeToHandler()
+
+    Shortcut logic for BOOK_APPOINTMENT:
+    - All 3 entities (service + date + time) -> jump to CONFIRM_BOOKING
+    - Service + date                         -> jump to CHECK_AVAILABILITY
+    - Service only                           -> jump to CHECK_AVAILABILITY
+    - No entities                            -> jump to BROWSE_SERVICES
+
+4.2 Modify src/chatbot/handlers/identify-client.ts
+    - Replace: import { getClient } from "../../tools/get-client.js"
+    - With:    import { getClientKommo } from "../../tools/get-client-kommo.js"
+    - Add:     ctx.kommoContactId = result.client.kommoContactId
+
+4.3 Modify src/chatbot/handlers/register-client.ts
+    - Replace: import { registerClient } from "../../tools/register-client.js"
+    - With:    import { registerClientKommo } from "../../tools/register-client-kommo.js"
+    - Add:     ctx.kommoContactId = result.client.kommoContactId
+
+4.4 Modify src/chatbot/handlers/confirm-booking.ts
+    - After successful createAppointment(), create a Kommo lead
+      (wrapped in non-fatal try/catch -- booking succeeds even if Kommo fails)
+    - Handle AI shortcut entry: when message is not "si"/"no" but all booking
+      data is present in ctx, show booking summary and ask for confirmation
+
+4.5 Modify src/tools/create-appointment.ts
+    - Add optional kommo_contact_id?: number to CreateAppointmentInput
+    - Include in the Supabase insert
+
+VERIFICATION:
+  - Natural language: "hola quiero un corte el viernes a las 3" from known number
+    Expected: greet -> identify from Kommo -> show booking summary -> ask si/no
+  - Partial entity: "quiero sacar un turno"
+    Expected: routes to BROWSE_SERVICES, shows service list
+  - Menu still works: send "1" from MAIN_MENU
+    Expected: bypasses AI, goes to BROWSE_SERVICES (unchanged behavior)
+  - Kommo sync: new phone registers -> contact appears in Kommo dashboard
+  - Lead creation: confirmed booking -> lead appears in Kommo pipeline
+
+
+================================================================================
+  PHASE 5: DEPLOYMENT SETUP
+================================================================================
+
+5.1 Recommended platform: Railway
+    - Simple PaaS, auto-deploy from GitHub, free tier available
+    - Build command: npm run build
+    - Start command: npm start
+    - Set all env vars in Railway dashboard
+    - Health check: GET /health
+
+5.2 Enhance health endpoint in src/whatsapp/webhook.ts
+    - Add Supabase connectivity check
+    - Return { status: "ok" | "degraded", checks: { server, supabase } }
+
+
+================================================================================
+  FILES SUMMARY
+================================================================================
+
+NEW FILES (7):
+  src/ai/prompts.ts                    System prompt builder for Claude
+  src/ai/intent-parser.ts              Claude Haiku intent parsing
+  src/kommo/client.ts                  Kommo REST API client
+  src/kommo/contacts.ts                Kommo contact CRUD
+  src/kommo/leads.ts                   Kommo lead/pipeline ops
+  src/tools/get-client-kommo.ts        Kommo-backed client lookup + dual-write
+  src/tools/register-client-kommo.ts   Kommo-backed registration + dual-write
+
+MODIFIED FILES (7):
+  src/chatbot/types.ts                 Add intent types, KommoContact, extend ctx
+  src/chatbot/handler.ts               Add AI parsing + intent shortcuts
+  src/chatbot/handlers/identify-client.ts   Swap to getClientKommo
+  src/chatbot/handlers/register-client.ts   Swap to registerClientKommo
+  src/chatbot/handlers/confirm-booking.ts   Add Kommo lead + AI shortcut entry
+  src/tools/create-appointment.ts      Add kommo_contact_id field
+  .env.example                         Add ANTHROPIC + KOMMO env vars
+
+NEW MIGRATION (1):
+  supabase/migrations/003_kommo_integration.sql   Add kommo_contact_id column
+
+UNCHANGED (14+ FILES):
+  All other handlers (browse-services, select-service, check-availability,
+  select-slot, view-appointments, cancel-appointment, done, main-menu),
+  all lib utilities (date-utils, phone-utils, slot-generator),
+  supabase.ts, sender.ts, webhook.ts, session.ts
+
+
+================================================================================
+  END-TO-END VERIFICATION CHECKLIST
+================================================================================
+
+  [ ] 1. Start dev server: npm run dev
+  [ ] 2. Send "hola" via WhatsApp
+         -> bot greets, looks up contact in Kommo, shows menu
+  [ ] 3. Send "quiero un corte el viernes a las 3"
+         -> AI parses intent, shows booking summary, asks si/no
+  [ ] 4. Send "si"
+         -> appointment created in Supabase, lead created in Kommo
+  [ ] 5. Send "2"
+         -> view appointments (menu-driven still works)
+  [ ] 6. Send "3"
+         -> cancel appointment flow works
+  [ ] 7. Check Kommo dashboard
+         -> new contact + lead visible in pipeline
+  [ ] 8. Check Supabase
+         -> appointment row has kommo_contact_id populated
+  [ ] 9. Kill ANTHROPIC_API_KEY temporarily
+         -> bot falls back to numbered menu (graceful degradation)
+
+
+================================================================================
+  KOMMO API REFERENCE (QUICK CHEAT SHEET)
+================================================================================
+
+Base URL:  https://{subdomain}.kommo.com/api/v4
+Auth:      Authorization: Bearer {access_token}
+Rate limit: 7 requests/second
+
+Key endpoints:
+  GET  /contacts?query={phone}           Search contacts by phone
+  POST /contacts                         Create contact (body is array)
+  PATCH /contacts/{id}                   Update contact
+  POST /leads                            Create lead (body is array)
+  PATCH /leads/{id}                      Update lead / move pipeline stage
+  GET  /leads/pipelines                  List pipelines
+  GET  /leads/pipelines/{id}/statuses    List stages in pipeline
+
+Contact phone field:
+  {
+    "field_code": "PHONE",
+    "values": [{ "value": "+5491112345678", "enum_code": "MOB" }]
+  }
+
+Lead with linked contact:
+  {
+    "name": "Turno: Corte de pelo - 15/02/2026 15:00",
+    "price": 5000,
+    "pipeline_id": 12345,
+    "status_id": 67890,
+    "_embedded": {
+      "contacts": [{ "id": 583338, "is_main": true }]
+    }
+  }
+
+Close lead as won:  PATCH /leads/{id}  { "status_id": 142 }
+Close lead as lost: PATCH /leads/{id}  { "status_id": 143 }
+
+
+================================================================================
+  COST ESTIMATES
+================================================================================
+
+Claude Haiku API (intent parsing):
+  - ~$0.001 per message parsed
+  - ~40-60% of messages bypass AI (numbers, keywords)
+  - Estimated: <$5/month for a small barber shop
+
+Kommo CRM:
+  - API included in all plans
+  - 7 req/sec rate limit (more than sufficient)
+
+Railway deployment:
+  - Free tier: 500 hours/month (enough for hobby)
+  - Starter: $5/month (always-on)
+
+Supabase:
+  - Free tier: 500MB database, 2GB bandwidth
+  - Pro: $25/month (for production)
+
+Total estimated monthly cost: $5-35/month depending on plans chosen

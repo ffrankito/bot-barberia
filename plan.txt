@@ -1,0 +1,224 @@
+====================================================================
+  CHATBOT DE TURNOS - PASOS PARA PONER EN MARCHA
+====================================================================
+
+1. SUPABASE (Base de datos)
+--------------------------------------------------------------------
+  a) Crear cuenta y proyecto:
+     - Ir a https://supabase.com y crear una cuenta (gratis)
+     - Crear un nuevo proyecto, elegir región South America (São Paulo)
+       para menor latencia desde Argentina
+     - Esperar a que el proyecto termine de inicializarse (~2 min)
+
+  b) Ejecutar las migraciones SQL:
+     - Ir a SQL Editor en el dashboard de Supabase
+     - Abrir el archivo supabase/migrations/001_create_tables.sql
+       y ejecutarlo. Esto crea:
+         * Tabla "clients" (usuarios de WhatsApp)
+         * Tabla "services" (servicios del negocio)
+         * Tabla "availability" (horarios semanales)
+         * Tabla "appointments" (turnos reservados)
+         * Triggers para updated_at automático
+         * Índices para búsquedas rápidas y detección de solapamiento
+         * Disponibilidad por defecto: Lun-Vie 09:00-18:00, Sáb 09:00-13:00
+     - Luego abrir 002_seed_services.sql y EDITARLO con tus servicios
+       reales antes de ejecutar (nombre, descripción, duración, precio)
+     - Verificar que todo se creó correctamente yendo a Table Editor
+       y revisando que las 4 tablas existan con datos
+
+  c) Obtener credenciales:
+     - Ir a Settings > API en el dashboard
+     - Copiar "Project URL" (ej: https://xxxx.supabase.co)
+     - Copiar "service_role key" (la key secreta, NO la anon key)
+       IMPORTANTE: la service_role key tiene acceso total a la DB,
+       nunca exponerla en frontend o repositorios públicos
+
+
+2. WHATSAPP / META CLOUD API
+--------------------------------------------------------------------
+  a) Crear cuenta de desarrollador:
+     - Ir a https://developers.facebook.com
+     - Crear una cuenta de desarrollador si no tenés una
+     - Crear una nueva app, tipo "Business", con el producto "WhatsApp"
+
+  b) Configurar WhatsApp:
+     - En el dashboard de la app, ir a WhatsApp > Getting Started
+     - Meta te asigna un número de prueba y hasta 5 números de destino
+       para testing (agregar tu número personal ahí)
+     - Copiar estos tres valores:
+         * Phone Number ID: lo encontrás en WhatsApp > API Setup
+         * Temporary Access Token: mismo lugar (dura 24hs, renovar seguido)
+         * Verify Token: lo elegís vos, es un string cualquiera que
+           usás para verificar el webhook (ej: "mi_token_secreto_2026")
+
+  c) Nota sobre el Access Token temporal:
+     - El token temporal de la sección "Getting Started" expira cada 24hs
+     - Para producción necesitás un System User Token permanente:
+       Business Settings > System Users > generar token con permisos
+       whatsapp_business_messaging y whatsapp_business_management
+
+
+3. VARIABLES DE ENTORNO
+--------------------------------------------------------------------
+  a) En la raíz del proyecto, copiar el archivo de ejemplo:
+       copy .env.example .env
+
+  b) Editar .env con los valores reales:
+
+       SUPABASE_URL=https://tu-proyecto.supabase.co
+       SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIs...
+       WHATSAPP_VERIFY_TOKEN=mi_token_secreto_2026
+       WHATSAPP_ACCESS_TOKEN=EAAxxxxxxx...
+       WHATSAPP_PHONE_NUMBER_ID=123456789012345
+       PORT=3000
+
+  c) NUNCA commitear el .env al repositorio. Ya está en .gitignore
+     pero verificar por las dudas.
+
+
+4. INSTALAR DEPENDENCIAS Y LEVANTAR EL SERVIDOR
+--------------------------------------------------------------------
+  a) Abrir una terminal en la carpeta del proyecto:
+       cd C:\tom\chatbot_prueba
+
+  b) Instalar dependencias (si no se hizo ya):
+       npm install
+
+  c) Levantar en modo desarrollo (con hot reload):
+       npm run dev
+
+     Deberías ver: "Chatbot server running on port 3000"
+
+  d) Verificar que funciona:
+     - Abrir en el navegador: http://localhost:3000/health
+     - Debe responder: {"status":"ok"}
+
+
+5. EXPONER EL SERVIDOR CON NGROK (para desarrollo)
+--------------------------------------------------------------------
+  Meta necesita una URL pública con HTTPS para enviar los webhooks.
+  Ngrok crea un túnel desde internet a tu localhost.
+
+  a) Instalar ngrok:
+     - Ir a https://ngrok.com, crear cuenta gratis
+     - Descargar ngrok e instalarlo
+     - Autenticar: ngrok config add-authtoken TU_TOKEN_NGROK
+
+  b) Levantar el túnel (en otra terminal):
+       ngrok http 3000
+
+  c) Copiar la URL HTTPS que te da ngrok, ej:
+       https://a1b2c3d4.ngrok-free.app
+
+  NOTA: La URL de ngrok cambia cada vez que reiniciás el túnel
+  (en el plan gratuito). Vas a tener que actualizar el webhook
+  en Meta cada vez que la URL cambie.
+
+
+6. CONFIGURAR WEBHOOK EN META
+--------------------------------------------------------------------
+  a) Ir a https://developers.facebook.com > tu app > WhatsApp > Configuration
+
+  b) En la sección "Webhook":
+     - Callback URL: https://tu-url-ngrok.ngrok-free.app/webhook
+     - Verify Token: el mismo valor que pusiste en WHATSAPP_VERIFY_TOKEN
+     - Hacer clic en "Verify and Save"
+     - Si el servidor está corriendo y ngrok está activo, debería
+       verificarse exitosamente
+
+  c) Suscribirse a los campos:
+     - Hacer clic en "Manage" y activar el campo "messages"
+     - Esto le dice a Meta que te envíe los mensajes entrantes
+
+
+7. PROBAR EL FLUJO COMPLETO
+--------------------------------------------------------------------
+  a) Enviar "Hola" desde WhatsApp al número de prueba de Meta
+
+  b) Flujo esperado:
+     1. Bot responde con saludo y verifica si el número está registrado
+     2. Si es la primera vez, pide el nombre
+     3. Muestra menú principal con 4 opciones
+     4. Opción 1: listar servicios > elegir uno > elegir fecha >
+        ver horarios > elegir horario > confirmar turno
+     5. Opción 2: ver turnos reservados
+     6. Opción 3: cancelar un turno
+     7. Opción 4: despedirse
+
+  c) Palabras clave universales:
+     - "volver" o "menu" -> vuelve al menú principal desde cualquier punto
+     - La sesión expira después de 15 min de inactividad
+
+  d) Verificar en Supabase:
+     - Table Editor > clients: debería aparecer tu registro
+     - Table Editor > appointments: deberían aparecer los turnos creados
+
+  e) Revisar la terminal del servidor para ver los logs de cada mensaje
+
+
+8. PERSONALIZAR PARA TU NEGOCIO
+--------------------------------------------------------------------
+  a) Servicios:
+     - Editar directamente en Supabase > Table Editor > services
+     - O modificar 002_seed_services.sql y re-ejecutar (borra los
+       anteriores primero con DELETE FROM services;)
+     - Campos: name, description, duration_minutes, price, is_active
+
+  b) Horarios de atención:
+     - Editar en Supabase > Table Editor > availability
+     - day_of_week: 0=Domingo, 1=Lunes, ..., 6=Sábado
+     - Podés tener múltiples bloques por día (ej: 09-13 y 15-19)
+     - is_active: false para desactivar sin borrar
+
+  c) Precios:
+     - Los precios están en la tabla services, columna "price"
+     - Formato numérico con 2 decimales (ej: 5000.00)
+
+
+9. PASAR A PRODUCCIÓN (cuando esté todo probado)
+--------------------------------------------------------------------
+  a) Hosting del servidor:
+     - Opciones recomendadas: Railway, Fly.io, Render, o un VPS
+     - Configurar las variables de entorno en el hosting
+     - Compilar: npm run build
+     - Ejecutar: npm start (corre el JS compilado desde dist/)
+
+  b) Dominio propio:
+     - Comprar un dominio y apuntarlo al servidor
+     - Configurar SSL (la mayoría de los hostings lo hacen automático)
+     - Actualizar el webhook en Meta con la URL definitiva
+
+  c) Token permanente de WhatsApp:
+     - En Meta Business Settings > System Users
+     - Crear un System User con rol Admin
+     - Generar un token con permisos:
+       whatsapp_business_messaging, whatsapp_business_management
+     - Este token no expira (a diferencia del temporal de 24hs)
+
+  d) Número de WhatsApp:
+     - Para producción necesitás verificar tu negocio en Meta
+     - Registrar un número de teléfono real (no el de prueba)
+     - Completar el proceso de verificación de Meta Business
+
+  e) Base de datos:
+     - El plan gratuito de Supabase tiene límites (500MB, pausa
+       después de 1 semana de inactividad)
+     - Para producción considerar el plan Pro ($25/mes)
+
+  f) Monitoreo:
+     - Revisar los logs del servidor regularmente
+     - Considerar agregar un servicio de logging (ej: Sentry)
+     - Configurar alertas para errores
+
+
+====================================================================
+  RESUMEN RÁPIDO (versión corta)
+====================================================================
+  1. Crear proyecto en Supabase, ejecutar los 2 SQL
+  2. Crear app en Meta developers con WhatsApp
+  3. Copiar .env.example a .env, llenar las 5 variables
+  4. npm install && npm run dev
+  5. ngrok http 3000
+  6. Configurar webhook en Meta con la URL de ngrok + /webhook
+  7. Mandar "Hola" por WhatsApp y probar el flujo
+====================================================================
