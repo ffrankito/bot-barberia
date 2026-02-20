@@ -7,6 +7,7 @@ import { supabase } from "../lib/supabase.js";
 import { checkRateLimit } from "../middleware/rate-limiter.js";
 import { logger, logMessage, logError } from "../lib/logger.js";
 import { handleMercadoPagoWebhook } from "../payments/webhook-handler.js";
+import { startScheduler } from "../jobs/scheduler.js";
 
 const app = express();
 app.use(express.json());
@@ -147,6 +148,7 @@ app.get("/health", async (_req, res) => {
 });
 
 app.post("/api/webhooks/mercadopago", handleMercadoPagoWebhook);
+
 // Capturar errores no manejados
 process.on('uncaughtException', (error) => {
   logError(error, 'uncaughtException');
@@ -166,3 +168,6 @@ app.use((err: any, req: any, res: any, next: any) => {
 app.listen(PORT, '0.0.0.0', () => {
   logger.info({ port: PORT }, '🚀 Chatbot server running');
 });
+
+// Iniciar scheduler de jobs (recordatorios, etc)
+startScheduler(60); // Ejecuta cada 60 minutos

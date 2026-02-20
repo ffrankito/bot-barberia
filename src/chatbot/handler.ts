@@ -1,5 +1,6 @@
 import type { ConversationContext, HandlerResult } from "./types.js";
 import { getSession, updateSession, clearSession } from "./session.js";
+import { supabase } from "../lib/supabase.js";
 
 import { handleGreeting } from "./handlers/greeting.js";
 import { handleIdentifyClient } from "./handlers/identify-client.js";
@@ -243,6 +244,47 @@ async function applyIntentShortcut(intentRes: any, ctx: ConversationContext): Pr
     console.log('❌ Intent: CANCEL_APPOINTMENT');
     ctx.state = "CANCEL_APPOINTMENT";
     return "";
+  }
+
+  // Confirm attendance (respuesta a recordatorio)
+  if (intentRes.intent === "CONFIRM_YES") {
+    console.log('✅ Intent: CONFIRM_YES (confirmación de asistencia)');
+    
+    // Buscar el próximo turno del cliente
+    if (ctx.clientId) {
+      try {
+        const { data: nextAppointment } = await supabase
+          .from('appointments')
+          .select('id, starts_at, services(name)')
+          .eq('client_id', ctx.clientId)
+          .eq('status', 'confirmed')
+          .gte('starts_at', new Date().toISOString())
+          .order('starts_at', { ascending: true })
+          .limit(1)
+          .single();
+        
+        if (nextAppointment) {
+          // Marcar como confirmado
+          await supabase
+            .from('appointments')
+            .update({ attendance_confirmed: true })
+            .eq('id', nextAppointment.id);
+          
+          return "✅ Perfecto! Tu asistencia está confirmada. Te esperamos! 😊";
+        }
+      } catch (e) {
+        console.error('Error confirmando asistencia:', e);
+      }
+    }
+    
+    return "✅ Recibido! Cualquier cosa escribime.";
+  }
+
+  // Deny attendance (respuesta negativa a recordatorio)
+  if (intentRes.intent === "CONFIRM_NO") {
+    console.log('❌ Intent: CONFIRM_NO (cancelación desde recordatorio)');
+    ctx.state = "CANCEL_APPOINTMENT";
+    return ""; // Let FSM handle cancellation
   }
 
   // Book appointment
