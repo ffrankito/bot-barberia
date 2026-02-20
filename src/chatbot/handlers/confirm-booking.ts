@@ -11,7 +11,19 @@ export async function handleConfirmBooking(
 ): Promise<HandlerResult> {
   const answer = message.trim().toLowerCase();
 
-  if (answer === "no") {
+  // Detectar intent de confirmación desde la IA
+  const confirmIntent = ctx.lastIntent?.intent;
+
+  // Confirmación negativa (NO)
+  const isNo = 
+    answer === "no" ||
+    confirmIntent === "CONFIRM_NO" ||
+    answer.includes("nah") ||
+    answer.includes("mejor no") ||
+    answer.includes("dejá") ||
+    answer.includes("cancelar");
+
+  if (isNo) {
     return {
       response:
         "Turno cancelado. Volvemos al menú.\n\n" +
@@ -23,7 +35,19 @@ export async function handleConfirmBooking(
     };
   }
 
-  if (answer !== "si" && answer !== "sí") {
+  // Confirmación positiva (SI)
+  const isYes =
+    answer === "si" ||
+    answer === "sí" ||
+    confirmIntent === "CONFIRM_YES" ||
+    answer.includes("dale") ||
+    answer.includes("ok") ||
+    answer.includes("perfecto") ||
+    answer.includes("confirmo") ||
+    answer.includes("va bien") ||
+    answer.includes("está bien");
+
+  if (!isYes) {
     // AI shortcut entry: if we arrived here with all booking data, show summary.
     if (ctx.selectedServiceName && ctx.selectedDate && ctx.selectedSlot) {
       const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
@@ -35,11 +59,14 @@ export async function handleConfirmBooking(
           `- Fecha: ${ctx.selectedDate}\n` +
           `- Hora: ${ctx.selectedSlot}\n` +
           priceText +
-          `\nRespondé *si* para confirmar o *no* para cancelar.`,
+          `\nRespondé *si* para confirmar o *no* para cancelar.\n` +
+          `(También podés decir "dale", "ok", "perfecto")`,
       };
     }
 
-    return { response: "Por favor escribí *si* para confirmar o *no* para cancelar." };
+    return { 
+      response: "Por favor confirmá con *si* o *no*.\n(También podés decir 'dale', 'ok', 'perfecto')" 
+    };
   }
 
   if (!ctx.clientId || !ctx.selectedServiceId || !ctx.selectedDate || !ctx.selectedSlot) {
@@ -130,7 +157,8 @@ export async function handleConfirmBooking(
       priceText +
       `¿Cómo preferís pagar?\n\n` +
       `1. 💳 Pagar ahora (Mercado Pago)\n` +
-      `2. 💵 Pagar en el local`,
+      `2. 💵 Pagar en el local\n\n` +
+      `(O escribí "mercado pago" / "efectivo")`,
     newState: "SELECT_PAYMENT_METHOD",
   };
 }

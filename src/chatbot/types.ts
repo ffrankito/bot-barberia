@@ -21,6 +21,11 @@ export type UserIntent =
   | "BOOK_APPOINTMENT"
   | "VIEW_APPOINTMENTS"
   | "CANCEL_APPOINTMENT"
+  | "RESCHEDULE_APPOINTMENT"
+  | "CONFIRM_YES"
+  | "CONFIRM_NO"
+  | "PAY_NOW"
+  | "PAY_LATER"
   | "GREETING"
   | "MENU"
   | "GOODBYE"
@@ -30,6 +35,8 @@ export interface ParsedEntities {
   serviceName?: string;
   date?: string; // YYYY-MM-DD (resolved by parseUserDate)
   time?: string; // HH:mm
+  appointmentReference?: string; // "el de mañana", "el primero"
+  paymentMethod?: "mercado_pago" | "cash";
   clientName?: string;
 }
 

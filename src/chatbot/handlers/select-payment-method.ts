@@ -6,7 +6,7 @@ export async function handleSelectPaymentMethod(
   ctx: ConversationContext,
   message: string
 ): Promise<HandlerResult> {
-  const choice = message.trim();
+  const choice = message.trim().toLowerCase();
 
   // Validar que tengamos los datos necesarios
   if (!ctx.selectedServicePrice || !ctx.selectedServiceName || !ctx.selectedDate || !ctx.selectedSlot) {
@@ -16,16 +16,29 @@ export async function handleSelectPaymentMethod(
     };
   }
 
-  // Opción 1: Pagar ahora con Mercado Pago
-  if (choice === "1") {
-    // Aquí debería estar el appointment_id guardado en el contexto
-    if (!ctx.lastAppointmentId) {
-      return {
-        response: "Error: no se encontró el turno. Por favor contactanos.",
-        newState: "MAIN_MENU",
-      };
-    }
+  if (!ctx.lastAppointmentId) {
+    return {
+      response: "Error: no se encontró el turno. Por favor contactanos.",
+      newState: "MAIN_MENU",
+    };
+  }
 
+  // Detectar si el usuario usó lenguaje natural gracias a la IA
+  const paymentIntent = ctx.lastIntent?.intent;
+  const paymentMethod = ctx.lastIntent?.entities?.paymentMethod;
+
+  // Opción 1: Pagar ahora (por intent PAY_NOW o choice "1" o palabras clave)
+  const wantsMercadoPago = 
+    choice === "1" ||
+    paymentIntent === "PAY_NOW" ||
+    paymentMethod === "mercado_pago" ||
+    choice.includes("mercado") ||
+    choice.includes("pago") ||
+    choice.includes("online") ||
+    choice.includes("tarjeta") ||
+    choice.includes("ahora");
+
+  if (wantsMercadoPago) {
     logger.info({
       appointmentId: ctx.lastAppointmentId,
       amount: ctx.selectedServicePrice,
@@ -93,8 +106,18 @@ export async function handleSelectPaymentMethod(
     }
   }
 
-  // Opción 2: Pagar en el local
-  if (choice === "2") {
+  // Opción 2: Pagar en el local (por intent PAY_LATER o choice "2" o palabras clave)
+  const wantsCash = 
+    choice === "2" ||
+    paymentIntent === "PAY_LATER" ||
+    paymentMethod === "cash" ||
+    choice.includes("efectivo") ||
+    choice.includes("local") ||
+    choice.includes("después") ||
+    choice.includes("cuando") ||
+    choice.includes("ahi");
+
+  if (wantsCash) {
     // Limpiar contexto
     ctx.selectedServiceId = undefined;
     ctx.selectedServiceName = undefined;
@@ -123,8 +146,9 @@ export async function handleSelectPaymentMethod(
   // Opción inválida
   return {
     response:
-      `Por favor elegí una opción válida:\n\n` +
+      `No entendí. Por favor elegí:\n\n` +
       `1. 💳 Pagar ahora (Mercado Pago)\n` +
-      `2. 💵 Pagar en el local`,
+      `2. 💵 Pagar en el local\n\n` +
+      `O escribí "mercado pago" / "efectivo"`,
   };
 }

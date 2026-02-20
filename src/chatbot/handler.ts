@@ -107,7 +107,8 @@ export async function processMessage(phone: string, message: string): Promise<st
     (ctx.state === "GREETING" ||
       ctx.state === "MAIN_MENU" ||
       ctx.state === "CHECK_AVAILABILITY" ||
-      ctx.state === "CONFIRM_BOOKING");
+      ctx.state === "CONFIRM_BOOKING" ||
+      ctx.state === "SELECT_PAYMENT_METHOD");
 
   if (shouldParseAI) {
     console.log('🤖 Parseando intent con AI...');
