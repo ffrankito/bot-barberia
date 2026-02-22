@@ -12,6 +12,12 @@ function toUserIntent(x: unknown): UserIntent {
     "BOOK_APPOINTMENT",
     "VIEW_APPOINTMENTS",
     "CANCEL_APPOINTMENT",
+    "RESCHEDULE_APPOINTMENT",
+    "CONFIRM_YES",
+    "CONFIRM_NO",
+    "PAY_NOW",
+    "PAY_LATER",
+    "QUERY_AVAILABILITY",
     "GREETING",
     "MENU",
     "GOODBYE",
@@ -30,6 +36,7 @@ function normalizeEntities(raw: any): { entities: ParsedEntities; rawDateText?: 
   const dateText = raw?.date_text ? String(raw.date_text).trim() : undefined;
   const time = raw?.time_text ? String(raw.time_text).trim() : undefined;
   const clientName = raw?.client_name ? String(raw.client_name).trim() : undefined;
+  const appointmentReference = raw?.appointment_reference ? String(raw.appointment_reference).trim() : undefined;
 
   const parsedDate = dateText ? parseUserDate(dateText) : null;
 
@@ -39,6 +46,7 @@ function normalizeEntities(raw: any): { entities: ParsedEntities; rawDateText?: 
       date: parsedDate || undefined,
       time: time || undefined,
       clientName: clientName || undefined,
+      appointmentReference: appointmentReference || undefined,
     },
     rawDateText: dateText || undefined,
   };
@@ -59,26 +67,31 @@ function quickBypass(message: string): IntentParseResult | null {
   const t = message.trim().toLowerCase();
   if (!t) return null;
 
-  // Single digit/number -> menu-driven flow should handle
+  // Números solos → el handler numérico los procesa
   if (/^\d{1,2}$/.test(t)) {
     return { intent: "UNKNOWN", entities: {}, confidence: 0 };
   }
 
-  if (t === "menu" || t === "menú" || t === "volver") {
+  if (t === "menu" || t === "menú" || t === "volver" || t === "inicio") {
     return { intent: "MENU", entities: {}, confidence: 1 };
   }
 
-  // Confirmations should be handled by the FSM (skip AI)
-  if (t === "si" || t === "sí" || t === "no") {
-    return { intent: "UNKNOWN", entities: {}, confidence: 0 };
+  if (t === "si" || t === "sí") {
+    return { intent: "CONFIRM_YES", entities: {}, confidence: 1 };
+  }
+  if (t === "no") {
+    return { intent: "CONFIRM_NO", entities: {}, confidence: 1 };
   }
 
-
-  if (t === "hola" || t === "buenas" || t === "buenos días" || t === "buenas tardes") {
-    return { intent: "GREETING", entities: {}, confidence: 0.9 };
+  if (["hola", "buenas", "buenos días", "buenos dias", "buenas tardes", "buenas noches", "hey"].includes(t)) {
+    return { intent: "GREETING", entities: {}, confidence: 0.95 };
   }
 
-  if (t === "chau" || t === "chao" || t === "gracias" || t === "salir") {
+  if (["chau", "chao", "salir", "hasta luego", "hasta pronto"].includes(t)) {
+    return { intent: "GOODBYE", entities: {}, confidence: 0.9 };
+  }
+
+  if (["gracias", "muchas gracias", "ok gracias"].includes(t)) {
     return { intent: "GOODBYE", entities: {}, confidence: 0.8 };
   }
 
@@ -109,7 +122,10 @@ export async function parseIntent(message: string, ctx: ConversationContext): Pr
               type: "text",
               text:
                 `Mensaje del usuario: ${message}\n` +
-                `Contexto: state=${ctx.state}, tieneCliente=${Boolean(ctx.clientId)}\n` +
+                `Estado actual: ${ctx.state}\n` +
+                `Cliente identificado: ${Boolean(ctx.clientId)}\n` +
+                `Servicio seleccionado: ${ctx.selectedServiceName ?? "ninguno"}\n` +
+                `Fecha seleccionada: ${ctx.selectedDate ?? "ninguna"}\n` +
                 "Devolvé JSON.",
             },
           ],

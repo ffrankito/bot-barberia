@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import { createHmac } from "crypto";
 import { processMessage } from "../chatbot/handler.js";
 import { sendWhatsAppMessage } from "./sender.js";
 import { normalizePhone } from "../lib/phone-utils.js";
@@ -10,10 +11,33 @@ import { handleMercadoPagoWebhook } from "../payments/webhook-handler.js";
 import { startScheduler } from "../jobs/scheduler.js";
 
 const app = express();
-app.use(express.json());
+app.use(express.json({
+  verify: (req: any, _res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN ?? "";
+function verifyMetaSignature(req: any): boolean {
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  if (!appSecret) {
+    console.warn("⚠️ WHATSAPP_APP_SECRET no configurado, omitiendo verificación de firma");
+    return true;
+  }
+
+  const signature = req.headers["x-hub-signature-256"] as string;
+  if (!signature) {
+    console.warn("⚠️ Webhook sin header x-hub-signature-256");
+    return false;
+  }
+
+  const expected = "sha256=" + createHmac("sha256", appSecret)
+    .update(req.rawBody)
+    .digest("hex");
+
+  return signature === expected;
+}
 
 logger.info({
   port: PORT,
@@ -47,6 +71,12 @@ app.get("/webhook", (req, res) => {
 
 // Webhook handler (POST) - receives incoming messages
 app.post("/webhook", async (req, res) => {
+  // FIX: Verificar firma de Meta antes de procesar
+  if (!verifyMetaSignature(req)) {
+    console.warn("🚫 Webhook con firma inválida rechazado");
+    return res.sendStatus(403);
+  }
+
   // Always respond 200 quickly to avoid retries
   res.sendStatus(200);
 

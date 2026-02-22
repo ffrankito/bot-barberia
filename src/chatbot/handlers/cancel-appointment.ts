@@ -11,7 +11,7 @@ export async function handleCancelAppointment(
     return { response: "Error interno.", newState: "MAIN_MENU" };
   }
 
-  // First call: show cancellable appointments
+  // Primera llamada: cargar y mostrar los turnos cancelables
   if (!ctx.cancellableAppointments) {
     const result = await getAppointments({ client_id: ctx.clientId });
     const cancellable = result.appointments.filter((a) => a.status !== "cancelled");
@@ -20,6 +20,7 @@ export async function handleCancelAppointment(
       return {
         response:
           "No tenés turnos para cancelar.\n\n" +
+          "¿En qué te puedo ayudar?\n\n" +
           "1. Ver servicios y sacar turno\n" +
           "2. Ver mis turnos\n" +
           "3. Cancelar un turno\n" +
@@ -34,31 +35,98 @@ export async function handleCancelAppointment(
       starts_at: a.starts_at,
     }));
 
+    // Si solo hay uno, mostrar y pedir confirmación directamente
+    if (cancellable.length === 1) {
+      const único = cancellable[0];
+      return {
+        response:
+          `Encontré tu turno:\n\n` +
+          `*${único.service_name}* — ${único.starts_at}\n\n` +
+          `¿Lo cancelamos? Respondé *si* o *no*.`,
+      };
+    }
+
     const list = cancellable
-      .map((a, i) => `${i + 1}. *${a.service_name}* - ${a.starts_at}`)
+      .map((a, i) => `${i + 1}. *${a.service_name}* — ${a.starts_at}`)
       .join("\n");
 
     return {
       response:
         `¿Cuál turno querés cancelar?\n\n${list}\n\n` +
-        `Escribí el número, o *volver* para ir al menú.`,
+        `Escribí el número o describí el turno (ej: "el del viernes", "el de corte").`,
     };
   }
 
-  // Second call: process selection
-  const choice = parseInt(message.trim(), 10);
+  // Segunda llamada: procesar la selección
   const appointments = ctx.cancellableAppointments;
+  const trimmed = message.trim().toLowerCase();
 
-  if (isNaN(choice) || choice < 1 || choice > appointments.length) {
-    return {
-      response: `Escribí un número del 1 al ${appointments.length}, o *volver*.`,
-    };
+  // Si es "si" y hay un solo turno → cancelar ese
+  if ((trimmed === "si" || trimmed === "sí") && appointments.length === 1) {
+    return performCancellation(ctx, appointments[0]);
   }
 
-  const selected = appointments[choice - 1]!;
+  // Intentar por número
+  const choice = parseInt(message.trim(), 10);
+  if (!isNaN(choice) && choice >= 1 && choice <= appointments.length) {
+    return performCancellation(ctx, appointments[choice - 1]);
+  }
+
+  // Intentar matchear por texto (servicio, fecha, día)
+  const matched = matchAppointmentByText(appointments, trimmed);
+  if (matched) {
+    return performCancellation(ctx, matched);
+  }
+
+  return {
+    response: `No entendí. Escribí el número del turno (1-${appointments.length}) o describilo mejor.\nO escribí *volver* para ir al menú.`,
+  };
+}
+
+function matchAppointmentByText(
+  appointments: Array<{ id: string; service_name: string; starts_at: string }>,
+  text: string
+): (typeof appointments)[0] | null {
+  // Matchear por nombre de servicio
+  const byService = appointments.find((a) =>
+    a.service_name.toLowerCase().includes(text) ||
+    text.includes(a.service_name.toLowerCase().split(" ")[0])
+  );
+  if (byService) return byService;
+
+  // Matchear por número de día (ej: "el 26")
+  const dayMatch = text.match(/\b(\d{1,2})\b/);
+  if (dayMatch) {
+    const targetDay = parseInt(dayMatch[1], 10);
+    const byDay = appointments.find((a) => {
+      const d = new Date(a.starts_at);
+      return d.getDate() === targetDay;
+    });
+    if (byDay) return byDay;
+  }
+
+  // Matchear por día de semana
+  const daysMap: Record<string, number> = {
+    lunes: 1, martes: 2, miércoles: 3, miercoles: 3,
+    jueves: 4, viernes: 5, sábado: 6, sabado: 6, domingo: 0,
+  };
+  for (const [dayName, dayNum] of Object.entries(daysMap)) {
+    if (text.includes(dayName)) {
+      const byWeekday = appointments.find((a) => new Date(a.starts_at).getDay() === dayNum);
+      if (byWeekday) return byWeekday;
+    }
+  }
+
+  return null;
+}
+
+async function performCancellation(
+  ctx: ConversationContext,
+  selected: { id: string; service_name: string; starts_at: string }
+): Promise<HandlerResult> {
   const result = await cancelAppointment({
     appointment_id: selected.id,
-    client_id: ctx.clientId,
+    client_id: ctx.clientId!,
   });
 
   ctx.cancellableAppointments = undefined;
@@ -75,36 +143,31 @@ export async function handleCancelAppointment(
     };
   }
 
-  // Cancel lead in Kommo
+  // Actualizar Kommo
   try {
     const { data: appointment } = await supabase
-      .from('appointments')
-      .select('kommo_lead_id')
-      .eq('id', selected.id)
+      .from("appointments")
+      .select("kommo_lead_id")
+      .eq("id", selected.id)
       .single();
 
     if (appointment?.kommo_lead_id) {
-      console.log('🔍 Cancelando lead en Kommo, ID:', appointment.kommo_lead_id);
-      
-      const { updateLeadStage } = await import("../../kommo/leads.js");
-      await updateLeadStage(appointment.kommo_lead_id, 143); // 143 = "Venta Perdido"
-      
-      console.log('✅ Lead cancelado en Kommo');
-    } else {
-      console.log('⚠️ No hay lead_id para cancelar en Kommo');
+      const cancelledStageId = Number(process.env.KOMMO_CANCELLED_STAGE_ID);
+      if (Number.isFinite(cancelledStageId)) {
+        const { updateLeadStage } = await import("../../kommo/leads.js");
+        await updateLeadStage(appointment.kommo_lead_id, cancelledStageId);
+      }
     }
-  } catch (e) {
-    console.error('⚠️ Error cancelando lead en Kommo:', e);
-  }
+  } catch {}
 
   return {
     response:
-      `Turno de *${selected.service_name}* del ${selected.starts_at} cancelado.\n\n` +
+      `✅ Turno de *${selected.service_name}* del ${selected.starts_at} cancelado.\n\n` +
       `¿Necesitás algo más?\n\n` +
-      "1. Ver servicios y sacar turno\n" +
-      "2. Ver mis turnos\n" +
-      "3. Cancelar un turno\n" +
-      "4. Salir",
+      `1. Ver servicios y sacar turno\n` +
+      `2. Ver mis turnos\n` +
+      `3. Cancelar un turno\n` +
+      `4. Salir`,
     newState: "MAIN_MENU",
   };
 }

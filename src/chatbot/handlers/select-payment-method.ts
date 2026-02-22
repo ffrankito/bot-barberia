@@ -28,7 +28,7 @@ export async function handleSelectPaymentMethod(
   const paymentMethod = ctx.lastIntent?.entities?.paymentMethod;
 
   // Opción 1: Pagar ahora (por intent PAY_NOW o choice "1" o palabras clave)
-  const wantsMercadoPago = 
+  const wantsMercadoPago =
     choice === "1" ||
     paymentIntent === "PAY_NOW" ||
     paymentMethod === "mercado_pago" ||
@@ -39,16 +39,23 @@ export async function handleSelectPaymentMethod(
     choice.includes("ahora");
 
   if (wantsMercadoPago) {
+    // FIX: Guardar datos ANTES de limpiar el contexto para evitar undefined en el mensaje
+    const price = ctx.selectedServicePrice;
+    const serviceName = ctx.selectedServiceName;
+    const date = ctx.selectedDate;
+    const slot = ctx.selectedSlot;
+    const appointmentId = ctx.lastAppointmentId;
+
     logger.info({
-      appointmentId: ctx.lastAppointmentId,
-      amount: ctx.selectedServicePrice,
+      appointmentId,
+      amount: price,
     }, "💳 Generando link de pago...");
 
     try {
       const paymentResult = await createPayment({
-        appointment_id: ctx.lastAppointmentId,
-        amount: ctx.selectedServicePrice,
-        description: `Turno: ${ctx.selectedServiceName} - ${ctx.selectedDate} ${ctx.selectedSlot}`,
+        appointment_id: appointmentId,
+        amount: price,
+        description: `Turno: ${serviceName} - ${date} ${slot}`,
       });
 
       if (paymentResult.success && paymentResult.payment_url) {
@@ -68,7 +75,7 @@ export async function handleSelectPaymentMethod(
           response:
             `💳 *Link de pago generado*\n\n` +
             `${paymentResult.payment_url}\n\n` +
-            `💰 Monto: $${ctx.selectedServicePrice}\n` +
+            `💰 Monto: $${price}\n` +
             `⏰ Completá el pago para confirmar tu turno.\n\n` +
             `¿Necesitás algo más?\n\n` +
             `1. Ver servicios y sacar turno\n` +
@@ -107,7 +114,7 @@ export async function handleSelectPaymentMethod(
   }
 
   // Opción 2: Pagar en el local (por intent PAY_LATER o choice "2" o palabras clave)
-  const wantsCash = 
+  const wantsCash =
     choice === "2" ||
     paymentIntent === "PAY_LATER" ||
     paymentMethod === "cash" ||

@@ -26,6 +26,7 @@ export type UserIntent =
   | "CONFIRM_NO"
   | "PAY_NOW"
   | "PAY_LATER"
+  | "QUERY_AVAILABILITY"   // "qué horarios hay el jueves?" sin turno activo
   | "GREETING"
   | "MENU"
   | "GOODBYE"
@@ -33,9 +34,9 @@ export type UserIntent =
 
 export interface ParsedEntities {
   serviceName?: string;
-  date?: string; // YYYY-MM-DD (resolved by parseUserDate)
-  time?: string; // HH:mm
-  appointmentReference?: string; // "el de mañana", "el primero"
+  date?: string;                  // YYYY-MM-DD (resolved by parseUserDate)
+  time?: string;                  // HH:mm
+  appointmentReference?: string;  // "el de mañana", "el primero", "el del 26"
   paymentMethod?: "mercado_pago" | "cash";
   clientName?: string;
 }

@@ -91,9 +91,13 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
     .select("id, starts_at, ends_at, status")
     .single();
 
-  if (insertErr) {
+   if (insertErr) {
+    // El constraint EXCLUDE de Postgres lanza error 23P01 cuando hay overlap
+    if (insertErr.code === '23P01' || insertErr.message.includes('overlapp') || insertErr.message.includes('no_overlapping')) {
+      return { success: false, error: "El horario ya no está disponible. Por favor elegí otro." };
+    }
     return { success: false, error: `Error creando turno: ${insertErr.message}` };
-  }
+  } 
 
   return {
     success: true,

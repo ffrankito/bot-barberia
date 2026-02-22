@@ -1,3 +1,5 @@
+import { formatPhoneForWhatsApp } from "../lib/phone-utils.js";
+
 const WHATSAPP_API_URL = "https://graph.facebook.com/v21.0";
 
 export async function sendWhatsAppMessage(to: string, body: string): Promise<void> {
@@ -7,6 +9,10 @@ export async function sendWhatsAppMessage(to: string, body: string): Promise<voi
   if (!phoneNumberId || !accessToken) {
     throw new Error("Missing WHATSAPP_PHONE_NUMBER_ID or WHATSAPP_ACCESS_TOKEN");
   }
+
+  // FIX: Meta API espera formato con espacios (+54 341 393 5931)
+  // pero en DB guardamos sin espacios (+5493413935931)
+  const formattedTo = formatPhoneForWhatsApp(to);
 
   const url = `${WHATSAPP_API_URL}/${phoneNumberId}/messages`;
 
@@ -19,7 +25,7 @@ export async function sendWhatsAppMessage(to: string, body: string): Promise<voi
     body: JSON.stringify({
       messaging_product: "whatsapp",
       recipient_type: "individual",
-      to,
+      to: formattedTo,
       type: "text",
       text: { body },
     }),

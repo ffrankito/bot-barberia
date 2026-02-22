@@ -24,7 +24,7 @@ export async function sendAppointmentReminders() {
         client_id,
         service_id
       `)
-      .eq('status', 'confirmed')
+      .in('status', ['confirmed', 'pending'])
       .eq('reminder_sent', false)
       .gte('starts_at', in23Hours.toISOString())
       .lte('starts_at', in25Hours.toISOString());

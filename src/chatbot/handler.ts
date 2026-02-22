@@ -18,57 +18,15 @@ import { handleDone } from "./handlers/done.js";
 
 import { parseIntent } from "../ai/intent-parser.js";
 import { searchServices } from "../tools/search-services.js";
+import { checkAvailability } from "../tools/check-availability.js";
+import { dayNameES, getDayOfWeek, parseUserDate } from "../lib/date-utils.js";
 
-/**
- * Process an incoming message and return the bot's response.
- * This is the main entry point for the conversational state machine.
- */
 export async function processMessage(phone: string, message: string): Promise<string> {
-  console.log('\n' + '🟢'.repeat(40));
-  console.log('🟢 PROCESS_MESSAGE - Inicio');
-  console.log('🟢 Phone:', phone);
-  console.log('🟢 Message:', message);
-  console.log('🟢'.repeat(40) + '\n');
-
   const ctx = await getSession(phone);
-  
-  console.log('📊 Contexto actual:');
-  console.log('   - state:', ctx.state);
-  console.log('   - clientId:', ctx.clientId);
-  console.log('   - kommoContactId:', ctx.kommoContactId);
-  console.log('   - selectedServiceId:', ctx.selectedServiceId);
-  console.log('   - selectedServiceName:', ctx.selectedServiceName);
-  console.log('   - selectedDate:', ctx.selectedDate);
-  console.log('   - selectedSlot:', ctx.selectedSlot);
-  console.log();
-
   const normalizedMsg = message.trim().toLowerCase();
   let messageForFSM = message;
 
-  // Carry over last AI intent after the GREETING -> IDENTIFY_CLIENT auto-advance.
-  // If the user sent a natural-language request in their first message, we store it in ctx.lastIntent
-  // and apply the shortcut once we land in MAIN_MENU.
-  if (!message.trim() && ctx.state === "MAIN_MENU" && ctx.lastIntent && !ctx.lastIntentApplied) {
-    console.log('🔄 Aplicando intent carryover...');
-    const intentRes = ctx.lastIntent;
-    ctx.lastIntentApplied = true;
-    try {
-      const prevState = ctx.state;
-      const shortcut = await applyIntentShortcut(intentRes, ctx);
-      if (shortcut) {
-        await updateSession(phone, ctx);
-        return shortcut;
-      }
-      if (ctx.state !== prevState) {
-        // We jumped states due to intent; avoid feeding natural language into menu handlers.
-        messageForFSM = "";
-      }
-    } catch (e) {
-      console.error("Intent carryover shortcut failed:", e);
-    }
-  }
-
-  // Universal keywords: "volver" or "menu" -> reset to MAIN_MENU (if identified)
+  // ── Universal keywords: volver / menu ────────────────────────────────────
   if (
     (normalizedMsg === "volver" || normalizedMsg === "menu" || normalizedMsg === "menú") &&
     ctx.state !== "GREETING" &&
@@ -76,7 +34,6 @@ export async function processMessage(phone: string, message: string): Promise<st
     ctx.state !== "REGISTER_CLIENT" &&
     ctx.clientId
   ) {
-    console.log('🔙 Volviendo al menú principal');
     ctx.state = "MAIN_MENU";
     ctx.selectedServiceId = undefined;
     ctx.selectedServiceName = undefined;
@@ -85,268 +42,211 @@ export async function processMessage(phone: string, message: string): Promise<st
     ctx.availableSlots = undefined;
     ctx.selectedSlot = undefined;
     ctx.cancellableAppointments = undefined;
-
     await updateSession(phone, ctx);
-    return (
-      `¿En qué te puedo ayudar?\n\n` +
-      `1. Ver servicios y sacar turno\n` +
-      `2. Ver mis turnos\n` +
-      `3. Cancelar un turno\n` +
-      `4. Salir`
-    );
+    return menuText();
   }
+
+  // ── Intent carryover after GREETING → IDENTIFY_CLIENT auto-advance ────────
+  if (!message.trim() && ctx.state === "MAIN_MENU" && ctx.lastIntent && !ctx.lastIntentApplied) {
+    const intentRes = ctx.lastIntent;
+    ctx.lastIntentApplied = true;
+    try {
+      const shortcut = await applyIntentShortcut(intentRes, ctx);
+      if (shortcut !== null) {
+        await updateSession(phone, ctx);
+        return shortcut || await continueFlow(phone, ctx);
+      }
+    } catch (e) {
+      console.error("Intent carryover failed:", e);
+    }
+  }
+
+  // ── AI intent parsing ─────────────────────────────────────────────────────
+  // Activo en TODOS los estados con mensaje real (no vacío)
+  const STATES_SKIP_AI = new Set(["IDENTIFY_CLIENT", "REGISTER_CLIENT"]);
+  const shouldParseAI = Boolean(message.trim()) && !STATES_SKIP_AI.has(ctx.state);
 
   let result: HandlerResult | undefined;
 
-  // -----------------------------------------------------------------------
-  // AI intent parsing (thin layer)
-  // - Only runs on states where the user can write freely
-  // - Always falls back to the existing menu-driven state machine
-  // -----------------------------------------------------------------------
-  const shouldParseAI =
-    Boolean(message.trim()) &&
-    (ctx.state === "GREETING" ||
-      ctx.state === "MAIN_MENU" ||
-      ctx.state === "CHECK_AVAILABILITY" ||
-      ctx.state === "CONFIRM_BOOKING" ||
-      ctx.state === "SELECT_PAYMENT_METHOD");
-
   if (shouldParseAI) {
-    console.log('🤖 Parseando intent con AI...');
     const intentRes = await parseIntent(message, ctx);
-    console.log('🤖 Intent detectado:', intentRes.intent);
-    console.log('🤖 Confidence:', intentRes.confidence);
-    console.log('🤖 Entities:', JSON.stringify(intentRes.entities, null, 2));
-    
     ctx.lastIntent = intentRes;
     ctx.lastIntentApplied = false;
 
     if (intentRes.confidence > 0.5) {
-      console.log('✅ Confidence > 0.5, intentando shortcut...');
       const prevState = ctx.state;
       const shortcut = await applyIntentShortcut(intentRes, ctx);
-      if (shortcut) {
-        console.log('✅ Shortcut aplicado exitosamente');
-        console.log('   Estado anterior:', prevState);
-        console.log('   Estado nuevo:', ctx.state);
+      if (shortcut !== null) {
         await updateSession(phone, ctx);
-        return shortcut;
+        return shortcut || await continueFlow(phone, ctx);
       }
       if (ctx.state !== prevState) {
-        console.log('🔄 Estado cambió sin shortcut, evitando FSM');
-        // We jumped states due to intent; avoid feeding natural language into menu handlers.
         messageForFSM = "";
       }
-    } else {
-      console.log('⚠️ Confidence baja, usando FSM normal');
     }
   }
 
-  // If AI didn't produce a shortcut, fall back to the state machine.
+  // ── FSM fallback ──────────────────────────────────────────────────────────
   if (!result) {
     try {
-      console.log('🎯 Ruteando al handler para state:', ctx.state);
       result = await routeToHandler(ctx, messageForFSM);
-      console.log('✅ Handler completado');
     } catch (error) {
-      console.error(`❌ Error in state ${ctx.state}:`, error);
+      console.error(`Error in state ${ctx.state}:`, error);
       return "Hubo un error procesando tu mensaje. Por favor intentá de nuevo.";
     }
-  } else {
-    // When we took an AI shortcut, we still need to set ctx.state consistently
-    if (result.newState) ctx.state = result.newState;
   }
 
-  // Update state if handler returned a new one
-  if (result.newState) {
-    console.log('🔄 Actualizando estado:', ctx.state, '→', result.newState);
-    ctx.state = result.newState;
-  }
-
+  if (result.newState) ctx.state = result.newState;
   await updateSession(phone, ctx);
 
-  // For auto-advancing states, chain the next handler immediately
+  // ── Auto-advance states ───────────────────────────────────────────────────
   if (ctx.state === "IDENTIFY_CLIENT") {
-    console.log('🔄 Auto-advancing: IDENTIFY_CLIENT');
     const nextResult = await processMessage(phone, "");
     return result.response ? `${result.response}\n\n${nextResult}` : nextResult;
   }
-
   if (ctx.state === "BROWSE_SERVICES" && result.newState === "BROWSE_SERVICES") {
-    console.log('🔄 Auto-advancing: BROWSE_SERVICES');
-    // Re-entered BROWSE_SERVICES -> auto-fetch
     return processMessage(phone, "");
   }
-
   if (ctx.state === "VIEW_MY_APPOINTMENTS" && result.newState === "VIEW_MY_APPOINTMENTS") {
-    console.log('🔄 Auto-advancing: VIEW_MY_APPOINTMENTS');
     return processMessage(phone, "");
   }
-
   if (ctx.state === "CANCEL_APPOINTMENT" && result.newState === "CANCEL_APPOINTMENT") {
-    console.log('🔄 Auto-advancing: CANCEL_APPOINTMENT');
     return processMessage(phone, "");
   }
 
-  // DONE -> clear session
   if (ctx.state === "DONE") {
-    console.log('👋 Limpiando sesión - DONE');
     await clearSession(phone);
   }
 
-  console.log('🟢 PROCESS_MESSAGE - Fin\n');
+  return result.response;
+}
+
+async function continueFlow(phone: string, ctx: ConversationContext): Promise<string> {
+  const result = await routeToHandler(ctx, "");
+  if (result.newState) ctx.state = result.newState;
+  await updateSession(phone, ctx);
   return result.response;
 }
 
 async function applyIntentShortcut(intentRes: any, ctx: ConversationContext): Promise<string | null> {
-  console.log('\n' + '🚀'.repeat(40));
-  console.log('🚀 APPLY_INTENT_SHORTCUT');
-  console.log('🚀 Intent:', intentRes.intent);
-  console.log('🚀 Entities:', JSON.stringify(intentRes.entities, null, 2));
-  console.log('🚀'.repeat(40) + '\n');
+  const { intent, entities } = intentRes;
 
-  // Menu intent
-  if (intentRes.intent === "MENU") {
-    console.log('📋 Intent: MENU');
+  if (intent === "MENU") {
     ctx.state = "MAIN_MENU";
-    return (
-      `¿En qué te puedo ayudar?\n\n` +
-      `1. Ver servicios y sacar turno\n` +
-      `2. Ver mis turnos\n` +
-      `3. Cancelar un turno\n` +
-      `4. Salir`
-    );
+    resetBookingCtx(ctx);
+    return menuText();
   }
 
-  // Greeting intent -> restart flow
-  if (intentRes.intent === "GREETING") {
-    console.log('👋 Intent: GREETING');
+  if (intent === "GREETING") {
     ctx.state = "GREETING";
-    return null; // let FSM handle GREETING
+    return null;
   }
 
-  // Goodbye intent -> exit
-  if (intentRes.intent === "GOODBYE") {
-    console.log('👋 Intent: GOODBYE');
+  if (intent === "GOODBYE") {
     ctx.state = "DONE";
-    return "¡Gracias! Cuando quieras, escribime de nuevo 🙂";
+    return `¡Gracias! Cuando quieras, escribime de nuevo 🙂`;
   }
 
-  // View appointments
-  if (intentRes.intent === "VIEW_APPOINTMENTS") {
-    console.log('👁️ Intent: VIEW_APPOINTMENTS');
+  if (intent === "VIEW_APPOINTMENTS") {
     ctx.state = "VIEW_MY_APPOINTMENTS";
-    return ""; // FSM auto-fetches in handler.ts
+    return "";
   }
 
-  // Cancel appointment
-  if (intentRes.intent === "CANCEL_APPOINTMENT") {
-    console.log('❌ Intent: CANCEL_APPOINTMENT');
+  if (intent === "QUERY_AVAILABILITY") {
+    return handleQueryAvailability(entities, ctx);
+  }
+
+  if (intent === "CONFIRM_YES") {
+    if (ctx.state === "CONFIRM_BOOKING") return null;
+    if (ctx.state === "SELECT_PAYMENT_METHOD") return null;
+
+    if (ctx.clientId) {
+      try {
+        const { data: nextAppointment } = await supabase
+          .from("appointments")
+          .select("id, starts_at, services(name)")
+          .eq("client_id", ctx.clientId)
+          .eq("status", "confirmed")
+          .gte("starts_at", new Date().toISOString())
+          .order("starts_at", { ascending: true })
+          .limit(1)
+          .single();
+
+        if (nextAppointment) {
+          await supabase
+            .from("appointments")
+            .update({ attendance_confirmed: true })
+            .eq("id", nextAppointment.id);
+          return "✅ ¡Perfecto! Tu asistencia está confirmada. Te esperamos 😊";
+        }
+      } catch {}
+    }
+    return null;
+  }
+
+  if (intent === "CONFIRM_NO") {
+    if (ctx.state === "CONFIRM_BOOKING") return null;
     ctx.state = "CANCEL_APPOINTMENT";
     return "";
   }
 
-  // Confirm attendance (respuesta a recordatorio)
-  if (intentRes.intent === "CONFIRM_YES") {
-    console.log('✅ Intent: CONFIRM_YES (confirmación de asistencia)');
-    
-    // Buscar el próximo turno del cliente
-    if (ctx.clientId) {
-      try {
-        const { data: nextAppointment } = await supabase
-          .from('appointments')
-          .select('id, starts_at, services(name)')
-          .eq('client_id', ctx.clientId)
-          .eq('status', 'confirmed')
-          .gte('starts_at', new Date().toISOString())
-          .order('starts_at', { ascending: true })
-          .limit(1)
-          .single();
-        
-        if (nextAppointment) {
-          // Marcar como confirmado
-          await supabase
-            .from('appointments')
-            .update({ attendance_confirmed: true })
-            .eq('id', nextAppointment.id);
-          
-          return "✅ Perfecto! Tu asistencia está confirmada. Te esperamos! 😊";
-        }
-      } catch (e) {
-        console.error('Error confirmando asistencia:', e);
-      }
+  if (intent === "CANCEL_APPOINTMENT") {
+    if (!ctx.clientId) return null;
+
+    const ref = entities?.appointmentReference;
+    const dateEntity = entities?.date;
+    const rawDate = intentRes.rawDateText;
+
+    if (ref || dateEntity || rawDate) {
+      const directResult = await tryCancelByReference(
+        ctx,
+        ref,
+        dateEntity,
+        rawDate,
+        entities?.serviceName
+      );
+      if (directResult) return directResult;
     }
-    
-    return "✅ Recibido! Cualquier cosa escribime.";
-  }
 
-  // Deny attendance (respuesta negativa a recordatorio)
-  if (intentRes.intent === "CONFIRM_NO") {
-    console.log('❌ Intent: CONFIRM_NO (cancelación desde recordatorio)');
     ctx.state = "CANCEL_APPOINTMENT";
-    return ""; // Let FSM handle cancellation
+    return "";
   }
 
-  // Book appointment
-  if (intentRes.intent === "BOOK_APPOINTMENT") {
-    console.log('📅 Intent: BOOK_APPOINTMENT');
-    
-    // 1) Resolve service (best effort)
-    if (intentRes.entities?.serviceName) {
+  if (intent === "PAY_NOW" || intent === "PAY_LATER") {
+    if (ctx.state === "SELECT_PAYMENT_METHOD") return null;
+  }
+
+  if (intent === "BOOK_APPOINTMENT") {
+    if (entities?.serviceName) {
       try {
-        console.log('🔍 Buscando servicio:', intentRes.entities.serviceName);
-        const { services } = await searchServices({ query: intentRes.entities.serviceName });
+        const { services } = await searchServices({ query: entities.serviceName });
         const best = services[0];
         if (best) {
-          console.log('✅ Servicio encontrado:', best.name, '(ID:', best.id, 'Precio:', best.price, ')');
           ctx.selectedServiceId = best.id;
           ctx.selectedServiceName = best.name;
           ctx.selectedServiceDuration = best.duration_minutes;
           ctx.selectedServicePrice = best.price;
-        } else {
-          console.log('⚠️ No se encontró servicio');
         }
-      } catch (e) {
-        console.error("❌ Service lookup failed:", e);
-      }
+      } catch {}
     }
 
-    // 2) Date/time prefill
-    if (intentRes.entities?.date) {
-      console.log('📅 Fecha detectada:', intentRes.entities.date);
-      ctx.selectedDate = intentRes.entities.date;
-    }
-    if (intentRes.entities?.time) {
-      console.log('🕐 Hora detectada:', intentRes.entities.time);
-      ctx.selectedSlot = intentRes.entities.time;
-    }
+    if (entities?.date) ctx.selectedDate = entities.date;
+    if (entities?.time) ctx.selectedSlot = entities.time;
 
-    // 3) Verificar disponibilidad si tiene servicio + fecha + hora
     if (ctx.selectedServiceId && ctx.selectedDate && ctx.selectedSlot) {
-      console.log('🔍 Verificando disponibilidad del horario solicitado...');
-      
       try {
-        const { checkAvailability } = await import("../tools/check-availability.js");
         const availability = await checkAvailability({
           service_id: ctx.selectedServiceId,
           date: ctx.selectedDate,
         });
 
-        const requestedSlot = ctx.selectedSlot;
-        const isSlotAvailable = availability.available_slots.includes(requestedSlot);
+        const isAvailable = availability.available_slots.includes(ctx.selectedSlot);
+        ctx.availableSlots = availability.available_slots;
 
-        if (isSlotAvailable) {
-          console.log('✅ Horario disponible!');
-          // Guardar slots disponibles por si necesita cambiar
-          ctx.availableSlots = availability.available_slots;
-          
-          // Si ya tiene clientId, ir directo a confirmación
+        if (isAvailable) {
           if (ctx.clientId) {
-            console.log('✅ Usuario identificado → CONFIRM_BOOKING');
             ctx.state = "CONFIRM_BOOKING";
-            
-            const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : '';
-            
+            const priceText = ctx.selectedServicePrice ? `- Precio: $${ctx.selectedServicePrice}\n` : "";
             return (
               `Confirmación de turno:\n\n` +
               `- Servicio: ${ctx.selectedServiceName}\n` +
@@ -356,87 +256,253 @@ async function applyIntentShortcut(intentRes: any, ctx: ConversationContext): Pr
               `\nRespondé *si* para confirmar o *no* para cancelar.`
             );
           } else {
-            // No tiene clientId, necesita identificarse primero
-            console.log('⚠️ Usuario no identificado → GREETING');
             ctx.state = "GREETING";
-            return null; // Let FSM handle identification
+            return null;
           }
         } else {
-          console.log('❌ Horario NO disponible, mostrando alternativas');
-          // El horario solicitado no está disponible, mostrar alternativas
-          ctx.availableSlots = availability.available_slots;
-          ctx.selectedSlot = undefined; // Limpiar el slot no disponible
-          
-          const slotList = availability.available_slots
-            .map((s, i) => `${i + 1}. ${s}`)
-            .join("\n");
-
+          const requestedSlot = ctx.selectedSlot;
+          ctx.selectedSlot = undefined;
           ctx.state = "SELECT_SLOT";
+          const slotList = availability.available_slots.map((s, i) => `${i + 1}. ${s}`).join("\n");
+          const dayName = dayNameES(getDayOfWeek(ctx.selectedDate));
           return (
             `El horario ${requestedSlot} no está disponible 😔\n\n` +
-            `Horarios disponibles el *${availability.day_name} ${ctx.selectedDate}*:\n\n` +
+            `Horarios disponibles el *${dayName} ${ctx.selectedDate}*:\n\n` +
             `${slotList}\n\n` +
             `Escribí el número del horario que preferís, o *volver* para ir al menú.`
           );
         }
-      } catch (e) {
-        console.error('❌ Error verificando disponibilidad:', e);
-        // Si falla, continuar con el flujo normal
-      }
+      } catch {}
     }
 
-    // 4) Jump logic normal (cuando no tiene hora específica)
-    console.log('\n📊 Evaluando salto de estado:');
-    console.log('   - clientId:', ctx.clientId, ctx.clientId ? '✅' : '❌');
-    console.log('   - selectedServiceId:', ctx.selectedServiceId, ctx.selectedServiceId ? '✅' : '❌');
-    console.log('   - selectedServicePrice:', ctx.selectedServicePrice, ctx.selectedServicePrice ? '✅' : '❌');
-    console.log('   - selectedDate:', ctx.selectedDate, ctx.selectedDate ? '✅' : '❌');
-    console.log('   - selectedSlot:', ctx.selectedSlot, ctx.selectedSlot ? '✅' : '❌');
-
-    if (ctx.selectedServiceId) {
-      console.log('✅ Servicio seleccionado → CHECK_AVAILABILITY');
+    if (ctx.selectedServiceId && ctx.selectedDate) {
       ctx.state = "CHECK_AVAILABILITY";
       return "";
     }
 
-    console.log('⚠️ Faltan datos → BROWSE_SERVICES');
+    if (ctx.selectedServiceId) {
+      ctx.state = "CHECK_AVAILABILITY";
+      return "";
+    }
+
     ctx.state = "BROWSE_SERVICES";
     return "";
   }
 
-  console.log('⚠️ No se aplicó ningún shortcut');
   return null;
 }
 
+async function handleQueryAvailability(entities: any, ctx: ConversationContext): Promise<string> {
+  const dateText = entities?.date;
+  const serviceName = entities?.serviceName;
+
+  if (!dateText) {
+    return (
+      `Atendemos:\n\n` +
+      `📅 Lunes a Viernes: 9:00 a 18:00\n` +
+      `📅 Sábados: 9:00 a 13:00\n` +
+      `❌ Domingos: cerrado\n\n` +
+      `¿Querés ver horarios disponibles para una fecha específica?\n` +
+      `Escribí el día, por ejemplo: *el jueves* o *mañana*`
+    );
+  }
+
+  let serviceId = ctx.selectedServiceId;
+  let displayServiceName = ctx.selectedServiceName;
+
+  if (!serviceId) {
+    if (serviceName) {
+      try {
+        const { services } = await searchServices({ query: serviceName });
+        if (services[0]) {
+          serviceId = services[0].id;
+          displayServiceName = services[0].name;
+        }
+      } catch {}
+    }
+    if (!serviceId) {
+      try {
+        const { services } = await searchServices({});
+        if (services[0]) {
+          serviceId = services[0].id;
+          displayServiceName = undefined;
+        }
+      } catch {}
+    }
+  }
+
+  if (!serviceId) {
+    return "No encontré servicios disponibles. Escribí *menu* para ver las opciones.";
+  }
+
+  try {
+    const availability = await checkAvailability({ service_id: serviceId, date: dateText });
+    const dayName = dayNameES(getDayOfWeek(dateText));
+
+    if (!availability.is_business_day) {
+      return `El *${dayName}* no atendemos. ¿Querés consultar otro día?`;
+    }
+
+    if (availability.available_slots.length === 0) {
+      return (
+        `No hay horarios disponibles el *${dayName} ${dateText}* 😔\n\n` +
+        `¿Querés consultar otro día? Escribí la fecha o día.`
+      );
+    }
+
+    const serviceLabel = displayServiceName ? ` (para ${displayServiceName})` : "";
+    const slotList = availability.available_slots.map((s, i) => `${i + 1}. ${s}`).join("\n");
+
+    return (
+      `Horarios disponibles el *${dayName} ${dateText}*${serviceLabel}:\n\n` +
+      `${slotList}\n\n` +
+      `¿Querés reservar uno? Escribí el número o decime el servicio y hora que preferís.\n` +
+      `(Ej: "quiero el 3" o "quiero corte a las 15:00")`
+    );
+  } catch {
+    return "Hubo un error consultando la disponibilidad. Intentá de nuevo.";
+  }
+}
+
+async function tryCancelByReference(
+  ctx: ConversationContext,
+  reference: string | undefined,
+  dateISO: string | undefined,
+  rawDateText: string | undefined,
+  serviceName: string | undefined
+): Promise<string | null> {
+  if (!ctx.clientId) return null;
+
+  try {
+    const { data: appointments, error } = await supabase
+      .from("appointments")
+      .select("id, starts_at, ends_at, status, services(name), kommo_lead_id")
+      .eq("client_id", ctx.clientId)
+      .neq("status", "cancelled")
+      .gte("starts_at", new Date().toISOString())
+      .order("starts_at", { ascending: true });
+
+    if (error || !appointments || appointments.length === 0) {
+      return "No tenés turnos activos para cancelar.";
+    }
+
+    let matched: any = null;
+
+    if (dateISO) {
+      matched = appointments.find((a: any) => a.starts_at.startsWith(dateISO));
+    }
+
+    if (!matched && rawDateText) {
+      const dayMatch = rawDateText.match(/^(\d{1,2})$/);
+      if (dayMatch) {
+        const targetDay = parseInt(dayMatch[1], 10);
+        matched = appointments.find((a: any) => {
+          const d = new Date(a.starts_at);
+          return d.getDate() === targetDay;
+        });
+      }
+    }
+
+    if (!matched && serviceName) {
+      const lower = serviceName.toLowerCase();
+      matched = appointments.find((a: any) =>
+        a.services?.name?.toLowerCase().includes(lower)
+      );
+    }
+
+    if (!matched && appointments.length === 1) {
+      matched = appointments[0];
+    }
+
+    if (!matched) {
+      ctx.state = "CANCEL_APPOINTMENT";
+      return null;
+    }
+
+    ctx.cancellableAppointments = appointments.map((a: any) => ({
+      id: a.id,
+      service_name: a.services?.name ?? "Servicio",
+      starts_at: a.starts_at,
+    }));
+
+    const serviceLabel = matched.services?.name ?? "turno";
+    const dateLabel = new Date(matched.starts_at).toLocaleDateString("es-AR", {
+      weekday: "long", day: "numeric", month: "long",
+    });
+    const timeLabel = new Date(matched.starts_at).toLocaleTimeString("es-AR", {
+      hour: "2-digit", minute: "2-digit",
+    });
+
+    const { cancelAppointment } = await import("../tools/cancel-appointment.js");
+    const result = await cancelAppointment({
+      appointment_id: matched.id,
+      client_id: ctx.clientId,
+    });
+
+    ctx.cancellableAppointments = undefined;
+
+    if (!result.success) {
+      return `${result.error}\n\n¿Querés algo más? Escribí *menu* para volver.`;
+    }
+
+    if (matched.kommo_lead_id) {
+      try {
+        const cancelledStageId = Number(process.env.KOMMO_CANCELLED_STAGE_ID);
+        if (Number.isFinite(cancelledStageId)) {
+          const { updateLeadStage } = await import("../kommo/leads.js");
+          await updateLeadStage(matched.kommo_lead_id, cancelledStageId);
+        }
+      } catch {}
+    }
+
+    return (
+      `✅ Turno cancelado:\n\n` +
+      `*${serviceLabel}*\n` +
+      `📅 ${dateLabel} a las ${timeLabel}\n\n` +
+      `¿Necesitás algo más?\n\n` +
+      menuText()
+    );
+  } catch (e) {
+    console.error("Error en tryCancelByReference:", e);
+    return null;
+  }
+}
+
+function menuText(): string {
+  return (
+    `¿En qué te puedo ayudar?\n\n` +
+    `1. Ver servicios y sacar turno\n` +
+    `2. Ver mis turnos\n` +
+    `3. Cancelar un turno\n` +
+    `4. Salir`
+  );
+}
+
+function resetBookingCtx(ctx: ConversationContext): void {
+  ctx.selectedServiceId = undefined;
+  ctx.selectedServiceName = undefined;
+  ctx.selectedServiceDuration = undefined;
+  ctx.selectedDate = undefined;
+  ctx.availableSlots = undefined;
+  ctx.selectedSlot = undefined;
+  ctx.cancellableAppointments = undefined;
+}
 
 async function routeToHandler(ctx: ConversationContext, message: string): Promise<HandlerResult> {
   switch (ctx.state) {
-    case "GREETING":
-      return handleGreeting(ctx, message);
-    case "IDENTIFY_CLIENT":
-      return handleIdentifyClient(ctx, message);
-    case "REGISTER_CLIENT":
-      return handleRegisterClient(ctx, message);
-    case "MAIN_MENU":
-      return handleMainMenu(ctx, message);
-    case "BROWSE_SERVICES":
-      return handleBrowseServices(ctx, message);
-    case "SELECT_SERVICE":
-      return handleSelectService(ctx, message);
-    case "CHECK_AVAILABILITY":
-      return handleCheckAvailability(ctx, message);
-    case "SELECT_SLOT":
-      return handleSelectSlot(ctx, message);
-    case "CONFIRM_BOOKING":
-      return handleConfirmBooking(ctx, message);
-    case "SELECT_PAYMENT_METHOD":
-      return handleSelectPaymentMethod(ctx, message);
-    case "VIEW_MY_APPOINTMENTS":
-      return handleViewAppointments(ctx, message);
-    case "CANCEL_APPOINTMENT":
-      return handleCancelAppointment(ctx, message);
-    case "DONE":
-      return handleDone(ctx, message);
+    case "GREETING":            return handleGreeting(ctx, message);
+    case "IDENTIFY_CLIENT":     return handleIdentifyClient(ctx, message);
+    case "REGISTER_CLIENT":     return handleRegisterClient(ctx, message);
+    case "MAIN_MENU":           return handleMainMenu(ctx, message);
+    case "BROWSE_SERVICES":     return handleBrowseServices(ctx, message);
+    case "SELECT_SERVICE":      return handleSelectService(ctx, message);
+    case "CHECK_AVAILABILITY":  return handleCheckAvailability(ctx, message);
+    case "SELECT_SLOT":         return handleSelectSlot(ctx, message);
+    case "CONFIRM_BOOKING":     return handleConfirmBooking(ctx, message);
+    case "SELECT_PAYMENT_METHOD": return handleSelectPaymentMethod(ctx, message);
+    case "VIEW_MY_APPOINTMENTS":  return handleViewAppointments(ctx, message);
+    case "CANCEL_APPOINTMENT":    return handleCancelAppointment(ctx, message);
+    case "DONE":                  return handleDone(ctx, message);
     default:
       return { response: "Error desconocido. Escribí *menu* para volver al menú.", newState: "MAIN_MENU" };
   }
