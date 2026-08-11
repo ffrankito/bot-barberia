@@ -16,7 +16,8 @@ export async function getSession(phone: string): Promise<ConversationContext> {
   }
 
   // 2. Buscar en la DB
-  const row = await queryOne<{ context: string; last_activity: string }>(
+  // pg parsea columnas jsonb automáticamente a objeto JS (a diferencia de Supabase)
+  const row = await queryOne<{ context: ConversationContext; last_activity: string }>(
     `SELECT context, last_activity FROM sessions WHERE phone = $1`,
     [phone]
   );
@@ -25,8 +26,8 @@ export async function getSession(phone: string): Promise<ConversationContext> {
     const elapsed = Date.now() - new Date(row.last_activity).getTime();
 
     if (elapsed < SESSION_TIMEOUT_MS) {
-      // Sesión válida, parsear el contexto
-      const ctx = JSON.parse(row.context) as ConversationContext;
+      // Sesión válida
+      const ctx = row.context;
       ctx.lastActivity = Date.now();
 
       // Actualizar caché local
