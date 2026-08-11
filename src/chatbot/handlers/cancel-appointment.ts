@@ -1,7 +1,6 @@
 import type { ConversationContext, HandlerResult } from "../types.js";
 import { getAppointments } from "../../tools/get-appointments.js";
 import { cancelAppointment } from "../../tools/cancel-appointment.js";
-import { supabase } from "../../lib/supabase.js";
 
 export async function handleCancelAppointment(
   ctx: ConversationContext,
@@ -142,23 +141,6 @@ async function performCancellation(
       newState: "MAIN_MENU",
     };
   }
-
-  // Actualizar Kommo
-  try {
-    const { data: appointment } = await supabase
-      .from("appointments")
-      .select("kommo_lead_id")
-      .eq("id", selected.id)
-      .single();
-
-    if (appointment?.kommo_lead_id) {
-      const cancelledStageId = Number(process.env.KOMMO_CANCELLED_STAGE_ID);
-      if (Number.isFinite(cancelledStageId)) {
-        const { updateLeadStage } = await import("../../kommo/leads.js");
-        await updateLeadStage(appointment.kommo_lead_id, cancelledStageId);
-      }
-    }
-  } catch {}
 
   return {
     response:

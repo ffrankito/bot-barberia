@@ -1,5 +1,5 @@
 import type { ConversationContext, HandlerResult } from "../types.js";
-import { registerClientKommo } from "../../tools/register-client-kommo.js";
+import { registerClient } from "../../tools/register-client.js";
 
 export async function handleRegisterClient(
   ctx: ConversationContext,
@@ -13,10 +13,9 @@ export async function handleRegisterClient(
     };
   }
 
-  const result = await registerClientKommo({ phone: ctx.phone, name });
+  const result = await registerClient({ phone: ctx.phone, name });
   ctx.clientId = result.client.id;
   ctx.clientName = name;
-  ctx.kommoContactId = result.client.kommoContactId;
 
   return {
     response:

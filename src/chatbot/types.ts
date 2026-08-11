@@ -48,22 +48,11 @@ export interface IntentParseResult {
   rawDateText?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Kommo
-// ---------------------------------------------------------------------------
-
-export interface KommoContact {
-  id: number;
-  name: string;
-  phone: string;
-}
-
 export interface ConversationContext {
   state: ConversationState;
   phone: string;
   clientId?: string;
   clientName?: string;
-  kommoContactId?: number;
   lastIntent?: IntentParseResult;
   lastIntentApplied?: boolean;
   lastActivity: number; // timestamp ms

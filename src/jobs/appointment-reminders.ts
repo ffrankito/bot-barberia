@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase.js';
+import { query, queryOne } from '../lib/db.js';
 import { sendWhatsAppMessage } from '../whatsapp/sender.js';
 import { logger } from '../lib/logger.js';
 
@@ -15,24 +15,14 @@ export async function sendAppointmentReminders() {
     const in25Hours = new Date(now.getTime() + 25 * 60 * 60 * 1000);
 
     // Buscar turnos pendientes sin recordatorio enviado
-    const { data: appointments, error } = await supabase
-      .from('appointments')
-      .select(`
-        id,
-        starts_at,
-        reminder_sent,
-        client_id,
-        service_id
-      `)
-      .in('status', ['confirmed', 'pending'])
-      .eq('reminder_sent', false)
-      .gte('starts_at', in23Hours.toISOString())
-      .lte('starts_at', in25Hours.toISOString());
-
-    if (error) {
-      logger.error({ error }, '❌ Error buscando turnos para recordatorios');
-      return;
-    }
+    const appointments = await query<any>(
+      `SELECT id, starts_at, reminder_sent, client_id, service_id
+       FROM appointments
+       WHERE status IN ('confirmed', 'pending')
+         AND reminder_sent = false
+         AND starts_at >= $1 AND starts_at <= $2`,
+      [in23Hours.toISOString(), in25Hours.toISOString()]
+    );
 
     if (!appointments || appointments.length === 0) {
       logger.info('ℹ️ No hay turnos para enviar recordatorios');
@@ -45,11 +35,10 @@ export async function sendAppointmentReminders() {
     for (const apt of appointments) {
       try {
         // Obtener datos del cliente
-        const { data: client } = await supabase
-          .from('clients')
-          .select('phone, name')
-          .eq('id', apt.client_id)
-          .single();
+        const client = await queryOne<{ phone: string; name: string }>(
+          `SELECT phone, name FROM clients WHERE id = $1`,
+          [apt.client_id]
+        );
 
         if (!client) {
           logger.warn({ appointmentId: apt.id }, 'Cliente no encontrado');
@@ -57,31 +46,30 @@ export async function sendAppointmentReminders() {
         }
 
         // Obtener datos del servicio
-        const { data: service } = await supabase
-          .from('services')
-          .select('name, price')
-          .eq('id', apt.service_id)
-          .single();
+        const service = await queryOne<{ name: string; price: number }>(
+          `SELECT name, price FROM services WHERE id = $1`,
+          [apt.service_id]
+        );
 
         if (!service) {
           logger.warn({ appointmentId: apt.id }, 'Servicio no encontrado');
           continue;
         }
-        
+
         // Formatear fecha y hora
         const aptDate = new Date(apt.starts_at);
-        const dateStr = aptDate.toLocaleDateString('es-AR', { 
-          weekday: 'long', 
-          day: '2-digit', 
-          month: '2-digit', 
-          year: 'numeric' 
+        const dateStr = aptDate.toLocaleDateString('es-AR', {
+          weekday: 'long',
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
         });
-        const timeStr = aptDate.toLocaleTimeString('es-AR', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
+        const timeStr = aptDate.toLocaleTimeString('es-AR', {
+          hour: '2-digit',
+          minute: '2-digit'
         });
 
-        const message = 
+        const message =
           `🔔 *Recordatorio de turno*\n\n` +
           `Hola ${client.name}! 👋\n\n` +
           `Mañana tenés turno:\n` +
@@ -96,26 +84,23 @@ export async function sendAppointmentReminders() {
         await sendWhatsAppMessage(client.phone, message);
 
         // Marcar como enviado
-        await supabase
-          .from('appointments')
-          .update({
-            reminder_sent: true,
-            reminder_sent_at: new Date().toISOString()
-          })
-          .eq('id', apt.id);
+        await query(
+          `UPDATE appointments SET reminder_sent = true, reminder_sent_at = $1 WHERE id = $2`,
+          [new Date().toISOString(), apt.id]
+        );
 
-        logger.info({ 
+        logger.info({
           appointmentId: apt.id,
-          phone: client.phone 
+          phone: client.phone
         }, '✅ Recordatorio enviado');
 
         // Esperar 1 segundo entre mensajes para no saturar
         await new Promise(resolve => setTimeout(resolve, 1000));
 
       } catch (error: any) {
-        logger.error({ 
+        logger.error({
           error: error.message,
-          appointmentId: apt.id 
+          appointmentId: apt.id
         }, '❌ Error enviando recordatorio individual');
         // Continuar con el siguiente aunque uno falle
       }

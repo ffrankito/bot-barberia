@@ -1,9 +1,6 @@
 import type { ConversationContext, HandlerResult } from "../types.js";
 import { createAppointment } from "../../tools/create-appointment.js";
 import { checkAvailability } from "../../tools/check-availability.js";
-import { createLead } from "../../kommo/leads.js";
-import { supabase } from "../../lib/supabase.js";
-import { logger } from "../../lib/logger.js";
 
 export async function handleConfirmBooking(
   ctx: ConversationContext,
@@ -75,7 +72,6 @@ export async function handleConfirmBooking(
 
   const result = await createAppointment({
     client_id: ctx.clientId,
-    kommo_contact_id: ctx.kommoContactId,
     service_id: ctx.selectedServiceId,
     date: ctx.selectedDate,
     time: ctx.selectedSlot,
@@ -113,34 +109,6 @@ export async function handleConfirmBooking(
       response: `${result.error}\n\nVolvemos al menú.`,
       newState: "MAIN_MENU",
     };
-  }
-
-  // Create Kommo lead and save lead_id
-  if (ctx.kommoContactId && ctx.selectedServiceName) {
-    try {
-      logger.debug('🔍 Creando lead en Kommo...');
-      
-      const leadId = await createLead({
-        contactId: ctx.kommoContactId,
-        serviceName: ctx.selectedServiceName,
-        appointmentDate: `${ctx.selectedDate} ${ctx.selectedSlot}`,
-        price: ctx.selectedServicePrice,
-      });
-      
-      logger.info({ leadId }, '✅ Lead creado en Kommo');
-
-      // Save lead_id to appointment
-      if (result.appointment?.id && leadId) {
-        await supabase
-          .from('appointments')
-          .update({ kommo_lead_id: leadId })
-          .eq('id', result.appointment.id);
-        
-        logger.debug('✅ Lead ID guardado en appointment');
-      }
-    } catch (e) {
-      logger.error({ error: e }, '❌ Error creando lead en Kommo');
-    }
   }
 
   // Guardar el appointment ID en el contexto para el siguiente paso

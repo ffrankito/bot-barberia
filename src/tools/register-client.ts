@@ -1,4 +1,4 @@
-import { supabase } from "../lib/supabase.js";
+import { queryOne } from "../lib/db.js";
 
 export interface RegisterClientInput {
   phone: string;
@@ -16,26 +16,15 @@ export interface RegisterClientOutput {
 }
 
 export async function registerClient(input: RegisterClientInput): Promise<RegisterClientOutput> {
-  const { data, error } = await supabase
-    .from("clients")
-    .insert({
-      phone: input.phone,
-      name: input.name,
-      notes: input.notes ?? "",
-    })
-    .select("id, phone, name, created_at")
-    .single();
+  const client = await queryOne<{ id: string; phone: string; name: string; created_at: string }>(
+    `INSERT INTO clients (phone, name, notes) VALUES ($1, $2, $3)
+     RETURNING id, phone, name, created_at`,
+    [input.phone, input.name, input.notes ?? ""]
+  );
 
-  if (error) {
-    throw new Error(`Error registering client: ${error.message}`);
+  if (!client) {
+    throw new Error("Error registering client");
   }
 
-  return {
-    client: {
-      id: data.id,
-      phone: data.phone,
-      name: data.name,
-      created_at: data.created_at,
-    },
-  };
+  return { client };
 }

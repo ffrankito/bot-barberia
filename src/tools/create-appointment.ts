@@ -1,11 +1,10 @@
 import { z } from "zod";
-import { supabase } from "../lib/supabase.js";
+import { query, queryOne } from "../lib/db.js";
 import { arDateTimeToUTC, formatAR } from "../lib/date-utils.js";
 
 // Schema de validación
 const CreateAppointmentSchema = z.object({
   client_id: z.string().uuid("client_id debe ser un UUID válido"),
-  kommo_contact_id: z.number().int().positive().optional(),
   service_id: z.string().uuid("service_id debe ser un UUID válido"),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date debe tener formato YYYY-MM-DD"),
   time: z.string().regex(/^\d{2}:\d{2}$/, "time debe tener formato HH:mm"),
@@ -14,7 +13,6 @@ const CreateAppointmentSchema = z.object({
 
 export interface CreateAppointmentInput {
   client_id: string;
-  kommo_contact_id?: number;
   service_id: string;
   date: string;  // YYYY-MM-DD
   time: string;  // HH:mm
@@ -35,24 +33,23 @@ export interface CreateAppointmentOutput {
 export async function createAppointment(input: CreateAppointmentInput): Promise<CreateAppointmentOutput> {
   // Validar input con Zod
   const validation = CreateAppointmentSchema.safeParse(input);
-  
+
   if (!validation.success) {
     const errors = validation.error.issues.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ');
     console.error('❌ Validación fallida:', errors);
-    return { 
-      success: false, 
-      error: `Datos inválidos: ${errors}` 
+    return {
+      success: false,
+      error: `Datos inválidos: ${errors}`
     };
   }
 
   // 1. Get service duration
-  const { data: service, error: serviceErr } = await supabase
-    .from("services")
-    .select("duration_minutes")
-    .eq("id", input.service_id)
-    .single();
+  const service = await queryOne<{ duration_minutes: number }>(
+    `SELECT duration_minutes FROM services WHERE id = $1`,
+    [input.service_id]
+  );
 
-  if (serviceErr || !service) {
+  if (!service) {
     return { success: false, error: "Servicio no encontrado." };
   }
 
@@ -61,51 +58,44 @@ export async function createAppointment(input: CreateAppointmentInput): Promise<
   const endsAt = new Date(startsAt.getTime() + service.duration_minutes * 60 * 1000);
 
   // 3. Check for overlapping appointments (atomic check)
-  const { data: overlapping, error: overlapErr } = await supabase
-    .from("appointments")
-    .select("id")
-    .neq("status", "cancelled")
-    .lt("starts_at", endsAt.toISOString())
-    .gt("ends_at", startsAt.toISOString())
-    .limit(1);
-
-  if (overlapErr) {
-    return { success: false, error: "Error verificando disponibilidad." };
-  }
+  const overlapping = await query<{ id: string }>(
+    `SELECT id FROM appointments
+     WHERE status != 'cancelled' AND starts_at < $1 AND ends_at > $2
+     LIMIT 1`,
+    [endsAt.toISOString(), startsAt.toISOString()]
+  );
 
   if (overlapping && overlapping.length > 0) {
     return { success: false, error: "El horario ya no está disponible. Por favor elegí otro." };
   }
 
   // 4. Insert appointment
-  const { data: appointment, error: insertErr } = await supabase
-    .from("appointments")
-    .insert({
-      client_id: input.client_id,
-      kommo_contact_id: input.kommo_contact_id ?? null,
-      service_id: input.service_id,
-      starts_at: startsAt.toISOString(),
-      ends_at: endsAt.toISOString(),
-      notes: input.notes ?? "",
-    })
-    .select("id, starts_at, ends_at, status")
-    .single();
+  try {
+    const appointment = await queryOne<{ id: string; starts_at: string; ends_at: string; status: string }>(
+      `INSERT INTO appointments (client_id, service_id, starts_at, ends_at, notes)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, starts_at, ends_at, status`,
+      [input.client_id, input.service_id, startsAt.toISOString(), endsAt.toISOString(), input.notes ?? ""]
+    );
 
-   if (insertErr) {
+    if (!appointment) {
+      return { success: false, error: "Error creando turno." };
+    }
+
+    return {
+      success: true,
+      appointment: {
+        id: appointment.id,
+        starts_at: formatAR(new Date(appointment.starts_at)),
+        ends_at: formatAR(new Date(appointment.ends_at)),
+        status: appointment.status,
+      },
+    };
+  } catch (insertErr: any) {
     // El constraint EXCLUDE de Postgres lanza error 23P01 cuando hay overlap
-    if (insertErr.code === '23P01' || insertErr.message.includes('overlapp') || insertErr.message.includes('no_overlapping')) {
+    if (insertErr.code === '23P01') {
       return { success: false, error: "El horario ya no está disponible. Por favor elegí otro." };
     }
     return { success: false, error: `Error creando turno: ${insertErr.message}` };
-  } 
-
-  return {
-    success: true,
-    appointment: {
-      id: appointment.id,
-      starts_at: formatAR(new Date(appointment.starts_at)),
-      ends_at: formatAR(new Date(appointment.ends_at)),
-      status: appointment.status,
-    },
-  };
+  }
 }

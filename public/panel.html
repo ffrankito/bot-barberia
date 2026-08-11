@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Turnos — Barbería</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital@0;1&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:        #0c0b09;
+    --surface:   #141210;
+    --surface-2: #1b1813;
+    --gold:      #c9a84c;
+    --gold-dim:  #a0823a;
+    --gold-soft: rgba(201, 168, 76, 0.08);
+    --gold-line: rgba(201, 168, 76, 0.22);
+    --text:      #e8dcc8;
+    --muted:     #6b6055;
+    --border:    #2a2620;
+    --success:   #27ae60;
+    --error:     #e57373;
+    --font-serif: 'Playfair Display', Georgia, serif;
+    --font-mono:  'DM Mono', 'Courier New', monospace;
+    --radius: 4px;
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--font-mono);
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 1.5rem 1.5rem 1rem;
+    text-align: center;
+  }
+  header h1 {
+    font-family: var(--font-serif);
+    font-weight: 400;
+    font-style: italic;
+    font-size: 1.6rem;
+    margin: 0;
+    color: var(--gold);
+  }
+  header p {
+    margin: 0.25rem 0 0;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 700px;
+    margin: 0 auto 1.5rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.75rem;
+    box-shadow: var(--shadow-sm);
+    flex-wrap: wrap;
+  }
+  .toolbar button, .toolbar select, .toolbar input {
+    background: rgba(255,255,255,0.03);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.85rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .toolbar button:hover, .toolbar select:hover {
+    border-color: var(--gold-line);
+  }
+  .toolbar button.active {
+    border-color: var(--gold);
+    color: var(--gold);
+    background: var(--gold-soft);
+  }
+  .toolbar input[type="date"] { cursor: text; }
+  .toolbar .spacer { flex: 1; }
+
+  main {
+    padding: 0 1.5rem 3rem;
+    max-width: 700px;
+    margin: 0 auto;
+  }
+  .day-title {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--gold);
+    margin: 1.5rem 0 0.5rem;
+  }
+  .day-title:first-child { margin-top: 0; }
+
+  .slots-list {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+  }
+  .slot-row {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    border-left: 3px solid transparent;
+  }
+  .slot-row:last-child { border-bottom: none; }
+  .slot-row.confirmed { border-left-color: var(--gold); background: rgba(201,168,76,0.04); }
+  .slot-row.pending { border-left-color: rgba(46,204,113,0.4); }
+  .slot-row.cancelled { border-left-color: var(--error); background: rgba(231,76,60,0.05); opacity: 0.6; }
+
+  .slot-hora {
+    font-size: 0.95rem;
+    color: var(--gold);
+    width: 52px;
+    flex-shrink: 0;
+  }
+  .cancelled .slot-hora { color: var(--error); }
+
+  .slot-info { flex: 1; min-width: 0; }
+  .slot-cliente {
+    font-family: var(--font-serif);
+    font-size: 1rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cancelled .slot-cliente { text-decoration: line-through; }
+  .slot-servicio {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .slot-servicio .sep { color: var(--gold-dim); margin: 0 0.4em; }
+
+  .slot-price {
+    font-size: 0.8rem;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  .badge {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 0.25rem 0.55rem;
+    border-radius: 4px;
+    flex-shrink: 0;
+    border: 1px solid transparent;
+  }
+  .badge.confirmed { color: var(--gold); border-color: var(--gold-line); background: var(--gold-soft); }
+  .badge.pending { color: var(--success); border-color: rgba(46,204,113,0.35); background: rgba(39,174,96,0.07); }
+  .badge.cancelled { color: var(--error); border-color: rgba(229,115,115,0.35); background: rgba(229,115,115,0.07); }
+
+  .empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 4rem 0;
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+  }
+
+  @media (max-width: 640px) {
+    .toolbar { justify-content: center; }
+    .slot-row { gap: 0.75rem; padding: 0.65rem 0.75rem; }
+    .slot-hora { width: 44px; font-size: 0.85rem; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Turnos</h1>
+    <p>Barbería</p>
+  </header>
+
+  <div class="toolbar">
+    <button id="btn-today" class="active">Hoy</button>
+    <button id="btn-week">Próximos 7 días</button>
+    <input type="date" id="date-input" />
+    <div class="spacer"></div>
+    <select id="status-filter">
+      <option value="all">Todos</option>
+      <option value="pending">Pendientes</option>
+      <option value="confirmed">Confirmados</option>
+      <option value="cancelled">Cancelados</option>
+    </select>
+    <button id="btn-refresh">↻</button>
+  </div>
+
+  <main id="content">
+    <div class="empty">Cargando…</div>
+  </main>
+
+<script>
+  const content = document.getElementById("content");
+  const dateInput = document.getElementById("date-input");
+  const statusFilter = document.getElementById("status-filter");
+  const btnToday = document.getElementById("btn-today");
+  const btnWeek = document.getElementById("btn-week");
+  const btnRefresh = document.getElementById("btn-refresh");
+
+  function todayISO() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  let mode = "today"; // "today" | "week" | "custom"
+  dateInput.value = todayISO();
+
+  function statusLabel(s) {
+    if (s === "confirmed") return "Confirmado";
+    if (s === "cancelled") return "Cancelado";
+    return "Pendiente";
+  }
+
+  async function load() {
+    let from, to;
+    const base = dateInput.value || todayISO();
+    if (mode === "week") {
+      from = todayISO();
+      const end = new Date();
+      end.setDate(end.getDate() + 6);
+      to = end.toISOString().slice(0, 10);
+    } else {
+      from = base;
+      to = base;
+    }
+
+    const params = new URLSearchParams({ from, to, status: statusFilter.value });
+    content.innerHTML = '<div class="empty">Cargando…</div>';
+
+    try {
+      const res = await fetch("/api/panel/appointments?" + params.toString());
+      const data = await res.json();
+      render(data.appointments || []);
+    } catch (e) {
+      content.innerHTML = '<div class="empty">Error cargando los turnos.</div>';
+    }
+  }
+
+  function render(appointments) {
+    if (appointments.length === 0) {
+      content.innerHTML = '<div class="empty">No hay turnos en este rango.</div>';
+      return;
+    }
+
+    const groups = {};
+    for (const a of appointments) {
+      (groups[a.date] ||= []).push(a);
+    }
+
+    let html = "";
+    for (const [date, items] of Object.entries(groups)) {
+      html += `<div class="day-title">${date}</div><div class="slots-list">`;
+      for (const a of items) {
+        html += `
+          <div class="slot-row ${a.status}">
+            <div class="slot-hora">${a.time}</div>
+            <div class="slot-info">
+              <div class="slot-cliente">${escapeHtml(a.client_name)}</div>
+              <div class="slot-servicio">${escapeHtml(a.service_name)}${a.client_phone ? `<span class="sep">·</span>${escapeHtml(a.client_phone)}` : ""}${a.notes ? `<span class="sep">·</span>${escapeHtml(a.notes)}` : ""}</div>
+            </div>
+            <div class="slot-price">$${a.price}</div>
+            <div class="badge ${a.status}">${statusLabel(a.status)}</div>
+          </div>`;
+      }
+      html += `</div>`;
+    }
+    content.innerHTML = html;
+  }
+
+  function escapeHtml(str) {
+    return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  btnToday.addEventListener("click", () => {
+    mode = "today";
+    dateInput.value = todayISO();
+    btnToday.classList.add("active");
+    btnWeek.classList.remove("active");
+    load();
+  });
+  btnWeek.addEventListener("click", () => {
+    mode = "week";
+    btnWeek.classList.add("active");
+    btnToday.classList.remove("active");
+    load();
+  });
+  dateInput.addEventListener("change", () => {
+    mode = "custom";
+    btnToday.classList.remove("active");
+    btnWeek.classList.remove("active");
+    load();
+  });
+  statusFilter.addEventListener("change", load);
+  btnRefresh.addEventListener("click", load);
+
+  load();
+  setInterval(load, 30000);
+</script>
+</body>
+</html>

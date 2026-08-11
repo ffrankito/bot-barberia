@@ -1,14 +1,17 @@
 import "dotenv/config";
 import express from "express";
+import path from "node:path";
 import { createHmac } from "crypto";
 import { processMessage } from "../chatbot/handler.js";
 import { sendWhatsAppMessage } from "./sender.js";
 import { normalizePhone } from "../lib/phone-utils.js";
-import { supabase } from "../lib/supabase.js";
+import { query } from "../lib/db.js";
 import { checkRateLimit } from "../middleware/rate-limiter.js";
 import { logger, logMessage, logError } from "../lib/logger.js";
 import { handleMercadoPagoWebhook } from "../payments/webhook-handler.js";
 import { startScheduler } from "../jobs/scheduler.js";
+import { getPanelAppointments } from "../panel/appointments.js";
+import { formatDateAR } from "../lib/date-utils.js";
 
 const app = express();
 app.use(express.json({
@@ -42,7 +45,7 @@ function verifyMetaSignature(req: any): boolean {
 logger.info({
   port: PORT,
   verifyToken: VERIFY_TOKEN ? '✅ Configurado' : '❌ Falta',
-  supabaseUrl: process.env.SUPABASE_URL ? '✅ Configurado' : '❌ Falta',
+  databaseUrl: process.env.DATABASE_URL ? '✅ Configurado' : '❌ Falta',
   whatsappToken: process.env.WHATSAPP_ACCESS_TOKEN ? '✅ Configurado' : '❌ Falta',
 }, '🔧 Configuración cargada');
 
@@ -158,26 +161,41 @@ app.post("/webhook", async (req, res) => {
 // Health check
 app.get("/health", async (_req, res) => {
   logger.debug('🏥 Health check request');
-  let supabaseOk = true;
+  let dbOk = true;
   try {
-    const { error } = await supabase.from("services").select("id").limit(1);
-    if (error) {
-      logger.error({ error }, '❌ Supabase error');
-      supabaseOk = false;
-    } else {
-      logger.debug('✅ Supabase OK');
-    }
+    await query("SELECT id FROM services LIMIT 1");
+    logger.debug('✅ DB OK');
   } catch (e) {
-    logger.error({ error: e }, '❌ Supabase catch');
-    supabaseOk = false;
+    logger.error({ error: e }, '❌ DB error');
+    dbOk = false;
   }
-  const checks = { server: true, supabase: supabaseOk };
-  const status = supabaseOk ? "ok" : "degraded";
+  const checks = { server: true, database: dbOk };
+  const status = dbOk ? "ok" : "degraded";
   logger.debug({ status, checks }, '🏥 Health response');
   res.json({ status, checks });
 });
 
 app.post("/api/webhooks/mercadopago", handleMercadoPagoWebhook);
+
+// Panel de turnos (solo lectura, sin auth por ahora)
+app.get("/panel", (_req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "panel.html"));
+});
+
+app.get("/api/panel/appointments", async (req, res) => {
+  try {
+    const today = formatDateAR(new Date()).split("/").reverse().join("-"); // dd/mm/yyyy -> yyyy-mm-dd
+    const from = typeof req.query.from === "string" ? req.query.from : today;
+    const to = typeof req.query.to === "string" ? req.query.to : from;
+    const status = typeof req.query.status === "string" ? req.query.status : "all";
+
+    const appointments = await getPanelAppointments({ from, to, status });
+    res.json({ appointments });
+  } catch (error) {
+    logError(error, "panel appointments");
+    res.status(500).json({ error: "Error obteniendo los turnos" });
+  }
+});
 
 // Capturar errores no manejados
 process.on('uncaughtException', (error) => {

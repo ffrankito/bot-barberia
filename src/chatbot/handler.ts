@@ -1,6 +1,6 @@
 import type { ConversationContext, HandlerResult } from "./types.js";
 import { getSession, updateSession, clearSession } from "./session.js";
-import { supabase } from "../lib/supabase.js";
+import { query, queryOne } from "../lib/db.js";
 
 import { handleGreeting } from "./handlers/greeting.js";
 import { handleIdentifyClient } from "./handlers/identify-client.js";
@@ -162,21 +162,18 @@ async function applyIntentShortcut(intentRes: any, ctx: ConversationContext): Pr
 
     if (ctx.clientId) {
       try {
-        const { data: nextAppointment } = await supabase
-          .from("appointments")
-          .select("id, starts_at, services(name)")
-          .eq("client_id", ctx.clientId)
-          .eq("status", "confirmed")
-          .gte("starts_at", new Date().toISOString())
-          .order("starts_at", { ascending: true })
-          .limit(1)
-          .single();
+        const nextAppointment = await queryOne<{ id: string }>(
+          `SELECT id FROM appointments
+           WHERE client_id = $1 AND status = 'confirmed' AND starts_at >= $2
+           ORDER BY starts_at ASC LIMIT 1`,
+          [ctx.clientId, new Date().toISOString()]
+        );
 
         if (nextAppointment) {
-          await supabase
-            .from("appointments")
-            .update({ attendance_confirmed: true })
-            .eq("id", nextAppointment.id);
+          await query(
+            `UPDATE appointments SET attendance_confirmed = true WHERE id = $1`,
+            [nextAppointment.id]
+          );
           return "✅ ¡Perfecto! Tu asistencia está confirmada. Te esperamos 😊";
         }
       } catch {}
@@ -374,15 +371,16 @@ async function tryCancelByReference(
   if (!ctx.clientId) return null;
 
   try {
-    const { data: appointments, error } = await supabase
-      .from("appointments")
-      .select("id, starts_at, ends_at, status, services(name), kommo_lead_id")
-      .eq("client_id", ctx.clientId)
-      .neq("status", "cancelled")
-      .gte("starts_at", new Date().toISOString())
-      .order("starts_at", { ascending: true });
+    const appointments = await query<any>(
+      `SELECT a.id, a.starts_at, a.ends_at, a.status, s.name AS service_name
+       FROM appointments a
+       JOIN services s ON s.id = a.service_id
+       WHERE a.client_id = $1 AND a.status != 'cancelled' AND a.starts_at >= $2
+       ORDER BY a.starts_at ASC`,
+      [ctx.clientId, new Date().toISOString()]
+    );
 
-    if (error || !appointments || appointments.length === 0) {
+    if (!appointments || appointments.length === 0) {
       return "No tenés turnos activos para cancelar.";
     }
 
@@ -443,16 +441,6 @@ async function tryCancelByReference(
 
     if (!result.success) {
       return `${result.error}\n\n¿Querés algo más? Escribí *menu* para volver.`;
-    }
-
-    if (matched.kommo_lead_id) {
-      try {
-        const cancelledStageId = Number(process.env.KOMMO_CANCELLED_STAGE_ID);
-        if (Number.isFinite(cancelledStageId)) {
-          const { updateLeadStage } = await import("../kommo/leads.js");
-          await updateLeadStage(matched.kommo_lead_id, cancelledStageId);
-        }
-      } catch {}
     }
 
     return (

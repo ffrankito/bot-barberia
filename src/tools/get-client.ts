@@ -1,4 +1,4 @@
-import { supabase } from "../lib/supabase.js";
+import { queryOne } from "../lib/db.js";
 
 export interface GetClientInput {
   phone: string; // E.164
@@ -15,27 +15,14 @@ export interface GetClientOutput {
 }
 
 export async function getClient(input: GetClientInput): Promise<GetClientOutput> {
-  const { data, error } = await supabase
-    .from("clients")
-    .select("id, phone, name, notes")
-    .eq("phone", input.phone)
-    .maybeSingle();
+  const client = await queryOne<{ id: string; phone: string; name: string; notes: string }>(
+    `SELECT id, phone, name, notes FROM clients WHERE phone = $1`,
+    [input.phone]
+  );
 
-  if (error) {
-    throw new Error(`Error fetching client: ${error.message}`);
-  }
-
-  if (!data) {
+  if (!client) {
     return { found: false };
   }
 
-  return {
-    found: true,
-    client: {
-      id: data.id,
-      phone: data.phone,
-      name: data.name,
-      notes: data.notes,
-    },
-  };
+  return { found: true, client };
 }

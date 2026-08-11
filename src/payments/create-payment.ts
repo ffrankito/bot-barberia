@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { preferenceClient } from './mercadopago-client.js';
-import { supabase } from '../lib/supabase.js';
+import { query, queryOne } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 
 const CreatePaymentSchema = z.object({
@@ -54,38 +54,33 @@ export async function createPayment(input: CreatePaymentInput): Promise<CreatePa
       return { success: false, error: 'Error creando preferencia de pago' };
     }
 
-    logger.info({ 
+    logger.info({
       preferenceId: preference.id,
-      appointmentId: input.appointment_id 
+      appointmentId: input.appointment_id
     }, '✅ Preferencia de MP creada');
 
     // Guardar en base de datos
-    const { data: payment, error: dbError } = await supabase
-      .from('payments')
-      .insert({
-        appointment_id: input.appointment_id,
-        mp_preference_id: preference.id,
-        payment_url: preference.init_point,
-        amount: input.amount,
-        status: 'pending',
-      })
-      .select('id')
-      .single();
+    const payment = await queryOne<{ id: string }>(
+      `INSERT INTO payments (appointment_id, mp_preference_id, payment_url, amount, status)
+       VALUES ($1, $2, $3, $4, 'pending')
+       RETURNING id`,
+      [input.appointment_id, preference.id, preference.init_point, input.amount]
+    );
 
-    if (dbError || !payment) {
-      logger.error({ error: dbError }, '❌ Error guardando pago en DB');
+    if (!payment) {
+      logger.error('❌ Error guardando pago en DB');
       return { success: false, error: 'Error guardando información de pago' };
     }
 
     // Actualizar appointment con referencia al pago
-    await supabase
-      .from('appointments')
-      .update({ payment_id: payment.id })
-      .eq('id', input.appointment_id);
+    await query(
+      `UPDATE appointments SET payment_id = $1 WHERE id = $2`,
+      [payment.id, input.appointment_id]
+    );
 
-    logger.info({ 
+    logger.info({
       paymentId: payment.id,
-      appointmentId: input.appointment_id 
+      appointmentId: input.appointment_id
     }, '✅ Pago guardado en DB');
 
     return {
@@ -96,9 +91,9 @@ export async function createPayment(input: CreatePaymentInput): Promise<CreatePa
 
   } catch (error: any) {
     logger.error({ error: error.message }, '❌ Error creando pago');
-    return { 
-      success: false, 
-      error: `Error con Mercado Pago: ${error.message}` 
+    return {
+      success: false,
+      error: `Error con Mercado Pago: ${error.message}`
     };
   }
 }

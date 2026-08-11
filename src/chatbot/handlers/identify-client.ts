@@ -1,16 +1,15 @@
 import type { ConversationContext, HandlerResult } from "../types.js";
-import { getClientKommo } from "../../tools/get-client-kommo.js";
+import { getClient } from "../../tools/get-client.js";
 
 export async function handleIdentifyClient(
   ctx: ConversationContext,
   _message: string
 ): Promise<HandlerResult> {
-  const result = await getClientKommo({ phone: ctx.phone });
+  const result = await getClient({ phone: ctx.phone });
 
   if (result.found && result.client) {
     ctx.clientId = result.client.id;
     ctx.clientName = result.client.name;
-    ctx.kommoContactId = result.client.kommoContactId;
     return {
       response:
         `¡Hola ${result.client.name}! ¿En qué te puedo ayudar?\n\n` +

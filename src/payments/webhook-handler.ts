@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { paymentClient } from './mercadopago-client.js';
-import { supabase } from '../lib/supabase.js';
+import { queryOne, query } from '../lib/db.js';
 import { sendWhatsAppMessage } from '../whatsapp/sender.js';
 import { logger } from '../lib/logger.js';
 
@@ -37,17 +37,21 @@ export async function handleMercadoPagoWebhook(req: Request, res: Response) {
       return res.sendStatus(200);
     }
 
-    // Buscar el pago en nuestra DB
-    const { data: paymentRecord, error: paymentError } = await supabase
-      .from('payments')
-      .select('*, appointments!inner(*, clients!inner(phone, name), services!inner(name))')
-      .eq('appointment_id', appointmentId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    // Buscar el pago en nuestra DB, junto con el turno, cliente y servicio
+    const paymentRecord = await queryOne<any>(
+      `SELECT p.id, c.phone AS client_phone, c.name AS client_name, s.name AS service_name
+       FROM payments p
+       JOIN appointments a ON a.id = p.appointment_id
+       JOIN clients c ON c.id = a.client_id
+       JOIN services s ON s.id = a.service_id
+       WHERE p.appointment_id = $1
+       ORDER BY p.created_at DESC
+       LIMIT 1`,
+      [appointmentId]
+    );
 
-    if (paymentError || !paymentRecord) {
-      logger.error({ error: paymentError, appointmentId }, '❌ Pago no encontrado en DB');
+    if (!paymentRecord) {
+      logger.error({ appointmentId }, '❌ Pago no encontrado en DB');
       return res.sendStatus(404);
     }
 
@@ -79,55 +83,54 @@ export async function handleMercadoPagoWebhook(req: Request, res: Response) {
     }
 
     // Actualizar en DB
-    const { error: updateError } = await supabase
-      .from('payments')
-      .update({
-        status: newStatus,
-        mp_payment_id: payment.id?.toString(),
-        payment_method: payment.payment_type_id,
-        paid_at: newStatus === 'paid' ? new Date().toISOString() : null,
-      })
-      .eq('id', paymentRecord.id);
-
-    if (updateError) {
+    try {
+      await query(
+        `UPDATE payments SET status = $1, mp_payment_id = $2, payment_method = $3, paid_at = $4
+         WHERE id = $5`,
+        [
+          newStatus,
+          payment.id?.toString(),
+          payment.payment_type_id,
+          newStatus === 'paid' ? new Date().toISOString() : null,
+          paymentRecord.id,
+        ]
+      );
+    } catch (updateError: any) {
       logger.error({ error: updateError }, '❌ Error actualizando pago');
       return res.sendStatus(500);
     }
 
-    logger.info({ 
+    logger.info({
       paymentId: paymentRecord.id,
-      newStatus 
+      newStatus
     }, '✅ Pago actualizado en DB');
 
     // Notificar al cliente por WhatsApp si es necesario
-    if (shouldNotify && paymentRecord.appointments?.clients?.phone) {
-      const client = paymentRecord.appointments.clients;
-      const service = paymentRecord.appointments.services;
-
+    if (shouldNotify && paymentRecord.client_phone) {
       let message = '';
 
       if (newStatus === 'paid') {
-        message = 
+        message =
           `✅ *¡Pago confirmado!*\n\n` +
-          `Hola ${client.name}! Recibimos tu pago de $${payment.transaction_amount}.\n\n` +
-          `📅 Servicio: ${service.name}\n` +
+          `Hola ${paymentRecord.client_name}! Recibimos tu pago de $${payment.transaction_amount}.\n\n` +
+          `📅 Servicio: ${paymentRecord.service_name}\n` +
           `🕐 Tu turno está confirmado.\n\n` +
           `¡Te esperamos!`;
       } else if (newStatus === 'failed') {
         message =
           `❌ *Pago rechazado*\n\n` +
-          `Hola ${client.name}, hubo un problema con tu pago.\n\n` +
+          `Hola ${paymentRecord.client_name}, hubo un problema con tu pago.\n\n` +
           `Por favor intentá nuevamente o contactanos para ayudarte.`;
       } else if (newStatus === 'refunded') {
         message =
           `💰 *Reembolso procesado*\n\n` +
-          `Hola ${client.name}, tu reembolso de $${payment.transaction_amount} ha sido procesado.\n\n` +
+          `Hola ${paymentRecord.client_name}, tu reembolso de $${payment.transaction_amount} ha sido procesado.\n\n` +
           `Recibirás el dinero en los próximos días según tu medio de pago.`;
       }
 
       if (message) {
-        await sendWhatsAppMessage(client.phone, message);
-        logger.info({ phone: client.phone, status: newStatus }, '📤 Notificación enviada');
+        await sendWhatsAppMessage(paymentRecord.client_phone, message);
+        logger.info({ phone: paymentRecord.client_phone, status: newStatus }, '📤 Notificación enviada');
       }
     }
 

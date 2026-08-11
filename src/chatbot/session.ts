@@ -1,9 +1,9 @@
 import type { ConversationContext } from "./types.js";
-import { supabase } from "../lib/supabase.js";
+import { query, queryOne } from "../lib/db.js";
 
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
-// Mantenemos un caché local para reducir consultas a Supabase
+// Mantenemos un caché local para reducir consultas a la DB
 const localCache = new Map<string, { ctx: ConversationContext; expiry: number }>();
 const CACHE_TTL = 60000; // 1 minuto en caché
 
@@ -15,31 +15,30 @@ export async function getSession(phone: string): Promise<ConversationContext> {
     return cached.ctx;
   }
 
-  // 2. Buscar en Supabase
-  const { data, error } = await supabase
-    .from("sessions")
-    .select("*")
-    .eq("phone", phone)
-    .maybeSingle();
+  // 2. Buscar en la DB
+  const row = await queryOne<{ context: string; last_activity: string }>(
+    `SELECT context, last_activity FROM sessions WHERE phone = $1`,
+    [phone]
+  );
 
-  if (!error && data) {
-    const elapsed = Date.now() - new Date(data.last_activity).getTime();
-    
+  if (row) {
+    const elapsed = Date.now() - new Date(row.last_activity).getTime();
+
     if (elapsed < SESSION_TIMEOUT_MS) {
       // Sesión válida, parsear el contexto
-      const ctx = JSON.parse(data.context) as ConversationContext;
+      const ctx = JSON.parse(row.context) as ConversationContext;
       ctx.lastActivity = Date.now();
-      
+
       // Actualizar caché local
       localCache.set(phone, {
         ctx,
         expiry: Date.now() + CACHE_TTL
       });
-      
+
       return ctx;
     } else {
       // Sesión expirada, eliminarla
-      await supabase.from("sessions").delete().eq("phone", phone);
+      await query(`DELETE FROM sessions WHERE phone = $1`, [phone]);
       localCache.delete(phone);
     }
   }
@@ -51,12 +50,12 @@ export async function getSession(phone: string): Promise<ConversationContext> {
     lastActivity: Date.now(),
   };
 
-  // Guardar en Supabase
-  await supabase.from("sessions").upsert({
-    phone,
-    context: JSON.stringify(ctx),
-    last_activity: new Date().toISOString(),
-  });
+  // Guardar en la DB
+  await query(
+    `INSERT INTO sessions (phone, context, last_activity) VALUES ($1, $2, $3)
+     ON CONFLICT (phone) DO UPDATE SET context = $2, last_activity = $3`,
+    [phone, JSON.stringify(ctx), new Date().toISOString()]
+  );
 
   // Guardar en caché local
   localCache.set(phone, {
@@ -76,29 +75,28 @@ export async function updateSession(phone: string, ctx: ConversationContext): Pr
     expiry: Date.now() + CACHE_TTL
   });
 
-  // Actualizar en Supabase
-  await supabase.from("sessions").upsert({
-    phone,
-    context: JSON.stringify(ctx),
-    last_activity: new Date().toISOString(),
-  });
+  // Actualizar en la DB
+  await query(
+    `INSERT INTO sessions (phone, context, last_activity) VALUES ($1, $2, $3)
+     ON CONFLICT (phone) DO UPDATE SET context = $2, last_activity = $3`,
+    [phone, JSON.stringify(ctx), new Date().toISOString()]
+  );
 }
 
 export async function clearSession(phone: string): Promise<void> {
   // Limpiar caché local
   localCache.delete(phone);
-  
-  // Eliminar de Supabase
-  await supabase.from("sessions").delete().eq("phone", phone);
+
+  // Eliminar de la DB
+  await query(`DELETE FROM sessions WHERE phone = $1`, [phone]);
 }
 
 // Función auxiliar para limpiar sesiones viejas (llamar periódicamente)
 export async function cleanupOldSessions(): Promise<void> {
-  const { error } = await supabase.rpc("cleanup_old_sessions");
-  
-  if (error) {
-    console.error("Error limpiando sesiones viejas:", error);
-  } else {
+  try {
+    await query(`DELETE FROM sessions WHERE last_activity < NOW() - INTERVAL '1 day'`);
     console.log("✅ Sesiones viejas limpiadas");
+  } catch (error) {
+    console.error("Error limpiando sesiones viejas:", error);
   }
 }

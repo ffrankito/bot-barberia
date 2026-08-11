@@ -1,4 +1,4 @@
-import { supabase } from "../lib/supabase.js";
+import { query } from "../lib/db.js";
 
 export interface SearchServicesInput {
   query?: string;
@@ -17,24 +17,23 @@ export interface SearchServicesOutput {
 }
 
 export async function searchServices(input: SearchServicesInput): Promise<SearchServicesOutput> {
-  let query = supabase
-    .from("services")
-    .select("id, name, description, duration_minutes, price")
-    .eq("is_active", true)
-    .order("name");
-
-  if (input.query) {
-    query = query.ilike("name", `%${input.query}%`);
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    throw new Error(`Error searching services: ${error.message}`);
-  }
+  const rows = input.query
+    ? await query<any>(
+        `SELECT id, name, description, duration_minutes, price
+         FROM services
+         WHERE is_active = true AND name ILIKE $1
+         ORDER BY name`,
+        [`%${input.query}%`]
+      )
+    : await query<any>(
+        `SELECT id, name, description, duration_minutes, price
+         FROM services
+         WHERE is_active = true
+         ORDER BY name`
+      );
 
   return {
-    services: (data ?? []).map((s) => ({
+    services: rows.map((s) => ({
       id: s.id,
       name: s.name,
       description: s.description,

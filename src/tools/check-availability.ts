@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { supabase } from "../lib/supabase.js";
+import { query, queryOne } from "../lib/db.js";
 import { getDayOfWeek, isDateToday, dayNameES, arDateTimeToUTC, formatTimeAR } from "../lib/date-utils.js";
 import { generateAvailableSlots, type TimeBlock, type ExistingAppointment } from "../lib/slot-generator.js";
 
@@ -25,7 +25,7 @@ export interface CheckAvailabilityOutput {
 export async function checkAvailability(input: CheckAvailabilityInput): Promise<CheckAvailabilityOutput> {
   // Validar input con Zod
   const validation = CheckAvailabilitySchema.safeParse(input);
-  
+
   if (!validation.success) {
     const errors = validation.error.issues.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ');
     console.error('❌ Validación fallida:', errors);
@@ -36,27 +36,22 @@ export async function checkAvailability(input: CheckAvailabilityInput): Promise<
   const dayName = dayNameES(dayOfWeek);
 
   // 1. Get service duration
-  const { data: service, error: serviceErr } = await supabase
-    .from("services")
-    .select("duration_minutes")
-    .eq("id", input.service_id)
-    .single();
+  const service = await queryOne<{ duration_minutes: number }>(
+    `SELECT duration_minutes FROM services WHERE id = $1`,
+    [input.service_id]
+  );
 
-  if (serviceErr || !service) {
-    throw new Error(`Service not found: ${serviceErr?.message ?? "unknown"}`);
+  if (!service) {
+    throw new Error("Service not found");
   }
 
   // 2. Get availability blocks for this day
-  const { data: blocks, error: blockErr } = await supabase
-    .from("availability")
-    .select("start_time, end_time")
-    .eq("day_of_week", dayOfWeek)
-    .eq("is_active", true)
-    .order("start_time");
-
-  if (blockErr) {
-    throw new Error(`Error fetching availability: ${blockErr.message}`);
-  }
+  const blocks = await query<{ start_time: string; end_time: string }>(
+    `SELECT start_time, end_time FROM availability
+     WHERE day_of_week = $1 AND is_active = true
+     ORDER BY start_time`,
+    [dayOfWeek]
+  );
 
   if (!blocks || blocks.length === 0) {
     return {
@@ -72,16 +67,11 @@ export async function checkAvailability(input: CheckAvailabilityInput): Promise<
   const dayStartUTC = arDateTimeToUTC(input.date, "00:00");
   const dayEndUTC = arDateTimeToUTC(input.date, "23:59");
 
-  const { data: appointments, error: apptErr } = await supabase
-    .from("appointments")
-    .select("starts_at, ends_at")
-    .neq("status", "cancelled")
-    .gte("starts_at", dayStartUTC.toISOString())
-    .lte("starts_at", dayEndUTC.toISOString());
-
-  if (apptErr) {
-    throw new Error(`Error fetching appointments: ${apptErr.message}`);
-  }
+  const appointments = await query<{ starts_at: string; ends_at: string }>(
+    `SELECT starts_at, ends_at FROM appointments
+     WHERE status != 'cancelled' AND starts_at >= $1 AND starts_at <= $2`,
+    [dayStartUTC.toISOString(), dayEndUTC.toISOString()]
+  );
 
   const existingAppointments: ExistingAppointment[] = (appointments ?? []).map((a) => ({
     starts_at: formatTimeAR(new Date(a.starts_at)),
