@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/whatsapp/webhook.js",
+    "start": "node dist/scripts/migrate.js && node dist/whatsapp/webhook.js",
     "dev": "tsx watch src/whatsapp/webhook.ts",
     "db:migrate": "tsx src/scripts/migrate.ts"
   },
