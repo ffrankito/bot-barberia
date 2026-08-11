@@ -4,12 +4,18 @@ const { Pool, types } = pg;
 
 // El resto del código trata las fechas como strings ISO (así las devolvía Supabase).
 // pg por defecto las parsea a objetos Date — desactivamos eso para timestamp/timestamptz/date
-// y devolvemos el string tal cual, con "T" en vez de espacio para que sea ISO-8601 válido.
+// y devolvemos el string tal cual, pero normalizado a ISO-8601 válido:
+// - espacio -> "T"
+// - Postgres devuelve el offset de timezone sin minutos cuando es entero ("+00", "-03"),
+//   lo cual `new Date(...)` de V8 no parsea (da "Invalid Date"). Le agregamos ":00".
 const TIMESTAMPTZ_OID = 1184;
 const TIMESTAMP_OID = 1114;
 const DATE_OID = 1082;
+function toIsoString(val: string): string {
+  return val.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
+}
 for (const oid of [TIMESTAMPTZ_OID, TIMESTAMP_OID, DATE_OID]) {
-  types.setTypeParser(oid, (val: string) => val.replace(" ", "T"));
+  types.setTypeParser(oid, toIsoString);
 }
 
 const connectionString = process.env.DATABASE_URL;
