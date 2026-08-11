@@ -21,21 +21,21 @@ app.use(express.json({
 }));
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN ?? "";
-function verifyMetaSignature(req: any): boolean {
-  const appSecret = process.env.WHATSAPP_APP_SECRET;
-  if (!appSecret) {
-    console.warn("⚠️ WHATSAPP_APP_SECRET no configurado, omitiendo verificación de firma");
+
+function verifyKapsoSignature(req: any): boolean {
+  const secret = process.env.KAPSO_WEBHOOK_SECRET;
+  if (!secret) {
+    console.warn("⚠️ KAPSO_WEBHOOK_SECRET no configurado, omitiendo verificación de firma");
     return true;
   }
 
-  const signature = req.headers["x-hub-signature-256"] as string;
+  const signature = req.headers["x-webhook-signature"] as string;
   if (!signature) {
-    console.warn("⚠️ Webhook sin header x-hub-signature-256");
+    console.warn("⚠️ Webhook sin header x-webhook-signature");
     return false;
   }
 
-  const expected = "sha256=" + createHmac("sha256", appSecret)
+  const expected = createHmac("sha256", secret)
     .update(req.rawBody)
     .digest("hex");
 
@@ -44,38 +44,13 @@ function verifyMetaSignature(req: any): boolean {
 
 logger.info({
   port: PORT,
-  verifyToken: VERIFY_TOKEN ? '✅ Configurado' : '❌ Falta',
   databaseUrl: process.env.DATABASE_URL ? '✅ Configurado' : '❌ Falta',
-  whatsappToken: process.env.WHATSAPP_ACCESS_TOKEN ? '✅ Configurado' : '❌ Falta',
+  kapsoApiKey: process.env.KAPSO_API_KEY ? '✅ Configurado' : '❌ Falta',
 }, '🔧 Configuración cargada');
 
-// Webhook verification (GET) - Meta sends this to verify your endpoint
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  logger.debug({
-    mode,
-    tokenMatch: token === VERIFY_TOKEN,
-  }, '📞 Webhook verification request');
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    logger.info('✅ Webhook verified');
-    res.status(200).send(challenge);
-  } else {
-    logger.warn({
-      modeMatch: mode === "subscribe",
-      tokenMatch: token === VERIFY_TOKEN,
-    }, '⚠️ Webhook verification failed');
-    res.sendStatus(403);
-  }
-});
-
-// Webhook handler (POST) - receives incoming messages
+// Webhook handler (POST) - recibe eventos de Kapso (mensajes entrantes de WhatsApp)
 app.post("/webhook", async (req, res) => {
-  // FIX: Verificar firma de Meta antes de procesar
-  if (!verifyMetaSignature(req)) {
+  if (!verifyKapsoSignature(req)) {
     console.warn("🚫 Webhook con firma inválida rechazado");
     return res.sendStatus(403);
   }
@@ -84,74 +59,51 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   try {
-    const body = req.body;
-
-    logger.debug({ body }, '📩 Webhook recibido');
-
-    const entries = body?.entry;
-    if (!Array.isArray(entries)) {
-      logger.debug('⚠️ No entries array');
+    const eventType = req.headers["x-webhook-event"] as string;
+    if (eventType !== "whatsapp.message.received") {
+      logger.debug({ eventType }, '⚠️ Evento ignorado');
       return;
     }
 
-    for (const entry of entries) {
-      const changes = entry?.changes;
-      if (!Array.isArray(changes)) {
-        logger.debug('⚠️ No changes array');
+    const isBatch = req.headers["x-webhook-batch"] === "true" || req.body?.batch === true;
+    const payloads: any[] = isBatch ? (req.body?.data ?? []) : [req.body];
+
+    for (const payload of payloads) {
+      const message = payload?.message;
+      if (!message || message.type !== "text") {
+        logger.debug({ type: message?.type }, '⚠️ No es un mensaje de texto');
         continue;
       }
 
-      for (const change of changes) {
-        const value = change?.value;
-        if (!value || value.messaging_product !== "whatsapp") {
-          logger.debug('⚠️ Not a WhatsApp message');
-          continue;
-        }
+      const from = normalizePhone(message.from);
+      const text: string = message.text?.body ?? "";
 
-        const messages = value.messages;
-        if (!Array.isArray(messages)) {
-          logger.debug('⚠️ No messages array');
-          continue;
-        }
+      logger.debug({
+        originalPhone: message.from,
+        normalizedPhone: from,
+      }, '🔍 Procesando mensaje');
 
-        for (const msg of messages) {
-          // Only handle text messages
-          if (msg.type !== "text") {
-            logger.debug({ type: msg.type }, '⚠️ Not a text message');
-            continue;
-          }
+      logMessage(from, text, 'incoming');
 
-          const from = normalizePhone(msg.from);
-          const text: string = msg.text?.body ?? "";
-
-          logger.debug({
-            originalPhone: msg.from,
-            normalizedPhone: from,
-          }, '🔍 Procesando mensaje');
-
-          logMessage(from, text, 'incoming');
-
-          // 🛡️ RATE LIMITING
-          if (!checkRateLimit(from)) {
-            logger.warn({ phone: from }, '⚠️ Rate limit exceeded');
-            await sendWhatsAppMessage(from, "⚠️ Demasiados mensajes. Por favor esperá un minuto.");
-            continue;
-          }
-
-          logger.debug({ phone: from }, '⏳ Procesando con chatbot handler');
-          const reply = await processMessage(from, text);
-          logger.debug({ phone: from }, '✅ Handler completado');
-
-          if (reply) {
-            logMessage(from, reply, 'outgoing');
-            await sendWhatsAppMessage(from, reply);
-          } else {
-            logger.debug({ phone: from }, '⚠️ No hay respuesta para enviar');
-          }
-
-          logger.info({ phone: from }, '✅ Mensaje procesado completamente');
-        }
+      // 🛡️ RATE LIMITING
+      if (!checkRateLimit(from)) {
+        logger.warn({ phone: from }, '⚠️ Rate limit exceeded');
+        await sendWhatsAppMessage(from, "⚠️ Demasiados mensajes. Por favor esperá un minuto.");
+        continue;
       }
+
+      logger.debug({ phone: from }, '⏳ Procesando con chatbot handler');
+      const reply = await processMessage(from, text);
+      logger.debug({ phone: from }, '✅ Handler completado');
+
+      if (reply) {
+        logMessage(from, reply, 'outgoing');
+        await sendWhatsAppMessage(from, reply);
+      } else {
+        logger.debug({ phone: from }, '⚠️ No hay respuesta para enviar');
+      }
+
+      logger.info({ phone: from }, '✅ Mensaje procesado completamente');
     }
   } catch (error) {
     logError(error, 'webhook processing');

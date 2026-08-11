@@ -1,31 +1,27 @@
-import { formatPhoneForWhatsApp } from "../lib/phone-utils.js";
-
-const WHATSAPP_API_URL = "https://graph.facebook.com/v21.0";
+const KAPSO_API_URL = "https://api.kapso.ai/meta/whatsapp/v24.0";
 
 export async function sendWhatsAppMessage(to: string, body: string): Promise<void> {
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const phoneNumberId = process.env.KAPSO_PHONE_NUMBER_ID;
+  const apiKey = process.env.KAPSO_API_KEY;
 
-  if (!phoneNumberId || !accessToken) {
-    throw new Error("Missing WHATSAPP_PHONE_NUMBER_ID or WHATSAPP_ACCESS_TOKEN");
+  if (!phoneNumberId || !apiKey) {
+    throw new Error("Missing KAPSO_PHONE_NUMBER_ID or KAPSO_API_KEY");
   }
 
-  // FIX: Meta API espera formato con espacios (+54 341 393 5931)
-  // pero en DB guardamos sin espacios (+5493413935931)
-  const formattedTo = formatPhoneForWhatsApp(to);
+  // Kapso espera el número sin el "+" (ej: "5493413935931")
+  const toDigits = to.replace(/^\+/, "");
 
-  const url = `${WHATSAPP_API_URL}/${phoneNumberId}/messages`;
+  const url = `${KAPSO_API_URL}/${phoneNumberId}/messages`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      "X-API-Key": apiKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
       messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to: formattedTo,
+      to: toDigits,
       type: "text",
       text: { body },
     }),
@@ -33,7 +29,7 @@ export async function sendWhatsAppMessage(to: string, body: string): Promise<voi
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error(`WhatsApp API error (${response.status}):`, errorBody);
-    throw new Error(`WhatsApp API error: ${response.status}`);
+    console.error(`Kapso API error (${response.status}):`, errorBody);
+    throw new Error(`Kapso API error: ${response.status}`);
   }
 }
